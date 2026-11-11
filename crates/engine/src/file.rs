@@ -8,7 +8,16 @@
 //!   as a 256x256 PNG image;
 //! - `references/<n>.png` (or `.jpg`): the pinned reference pictures, as
 //!   the files they came from (added in phase 5; older versions of the
-//!   app ignore them, as they ignore anything they don't know).
+//!   app ignore them, as they ignore anything they don't know);
+//! - in an animated picture (file version 2, phase 6): `document.json`
+//!   also has an `animation` section (the frames, their holds, the frame
+//!   shown, fps, loop, named stretches, pivot), each animated layer lists
+//!   which tile it shows on each frame, and those tiles are in `frames/`,
+//!   each stored once however many frames show it.
+//!
+//! A picture that isn't animated is written as version 1, exactly as
+//! before, so Duck Quill 0.5.0 opens it. 0.5.0 refuses a version 2 file
+//! with "saved by a newer version", never opening half of it.
 //!
 //! Only painted tiles are stored, so saving is quick and files stay small.
 //! Tiles are stored exactly as the app keeps them in memory (8-bit,
@@ -16,10 +25,12 @@
 //! The file says which format and version it is, so later versions of the
 //! app (for example with 16-bit colour) can still open old files.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
@@ -42,9 +53,11 @@ pub const OLD_FILE_EXTENSION: &str = "artapp";
 const FORMAT_NAME: &str = "duckquill";
 /// What files said before the rename: the same format, so they open.
 const OLD_FORMAT_NAME: &str = "artapp";
-/// The file version this app writes, and the newest it can open. When the
-/// format changes, this goes up, and older versions must keep opening.
-pub const FORMAT_VERSION: u32 = 1;
+/// The newest file version this app writes and opens. When the format
+/// changes, this goes up, and older versions must keep opening.
+pub const FORMAT_VERSION: u32 = 2;
+/// The version of a picture that isn't animated: unchanged since 0.1.
+const PLAIN_VERSION: u32 = 1;
 /// How tile pixels are stored in version 1.
 const PIXEL_FORMAT: &str = "rgba8-premultiplied";
 /// The description inside the zip archive.
@@ -66,6 +79,24 @@ struct Description {
     /// Pinned reference pictures (missing in older files: none).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     references: Vec<ReferenceDescription>,
+    /// The frames, in version 2 files (an animated picture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    animation: Option<AnimationDescription>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AnimationDescription {
+    /// Each frame's hold, in order.
+    holds: Vec<u32>,
+    /// The frame shown.
+    current: usize,
+    fps: f32,
+    #[serde(rename = "loop")]
+    looping: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stretches: Vec<crate::frames::Stretch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pivot: Option<[f32; 2]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -87,6 +118,10 @@ struct LayerDescription {
     clip: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     lock: bool,
+    /// An animated layer (version 2): for each frame, its tiles, as
+    /// `"x_y"` and the number of the file in `frames/` that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frames: Option<Vec<BTreeMap<String, usize>>>,
 }
 
 /// Something went wrong while saving, opening or exporting.
@@ -152,9 +187,40 @@ pub fn write_document<W: Write + Seek>(document: &Document, writer: W) -> Result
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
     let layers = document.layers();
+    let animated = document.is_animated();
+    // An animated layer's tiles, each once: by the tile's address, the
+    // number of its file in frames/.
+    let mut pool: Vec<Arc<Tile>> = Vec::new();
+    let mut pooled: HashMap<*const Tile, usize> = HashMap::new();
+    let current = document.frame();
+    let mut layer_frames: Vec<Option<Vec<BTreeMap<String, usize>>>> = Vec::new();
+    for layer in layers {
+        if !layer.animated() {
+            layer_frames.push(None);
+            continue;
+        }
+        let mut frames = Vec::with_capacity(document.frame_count());
+        for frame in 0..document.frame_count() {
+            let mut tiles = BTreeMap::new();
+            for (coord, tile) in layer.drawing(frame, current).tiles_shared() {
+                let number = *pooled.entry(Arc::as_ptr(tile)).or_insert_with(|| {
+                    pool.push(Arc::clone(tile));
+                    pool.len() - 1
+                });
+                tiles.insert(format!("{}_{}", coord.x, coord.y), number);
+            }
+            frames.push(tiles);
+        }
+        layer_frames.push(Some(frames));
+    }
+    let timeline = document.timeline();
     let description = Description {
         format: FORMAT_NAME.to_owned(),
-        version: FORMAT_VERSION,
+        version: if animated {
+            FORMAT_VERSION
+        } else {
+            PLAIN_VERSION
+        },
         width: document.width(),
         height: document.height(),
         paper: [document.paper().r, document.paper().g, document.paper().b],
@@ -163,13 +229,15 @@ pub fn write_document<W: Write + Seek>(document: &Document, writer: W) -> Result
         next_layer_number: document.next_layer_number(),
         layers: layers
             .iter()
-            .map(|layer| LayerDescription {
+            .zip(layer_frames)
+            .map(|(layer, frames)| LayerDescription {
                 name: layer.name().to_owned(),
                 visible: layer.visible(),
                 opacity: layer.opacity(),
                 blend: layer.blend().name().to_owned(),
                 clip: layer.clip(),
                 lock: layer.lock(),
+                frames,
             })
             .collect(),
         references: document
@@ -182,17 +250,33 @@ pub fn write_document<W: Write + Seek>(document: &Document, writer: W) -> Result
                 view: reference.view,
             })
             .collect(),
+        animation: animated.then(|| AnimationDescription {
+            holds: timeline.frames().iter().map(|f| f.hold).collect(),
+            current,
+            fps: timeline.fps,
+            looping: timeline.looping,
+            stretches: timeline.stretches.clone(),
+            pivot: timeline.pivot,
+        }),
     };
     zip.start_file(DESCRIPTION_FILE, compressed)
         .map_err(write_error)?;
     serde_json::to_writer_pretty(&mut zip, &description).map_err(write_error)?;
 
     for (index, layer) in layers.iter().enumerate() {
+        if layer.animated() {
+            continue; // its tiles are in frames/
+        }
         for (coord, tile) in layer.surface.tiles() {
             let name = format!("layers/{index}/{}_{}.png", coord.x, coord.y);
             zip.start_file(name, as_is).map_err(write_error)?;
             encode_tile(tile, &mut zip)?;
         }
+    }
+    for (number, tile) in pool.iter().enumerate() {
+        zip.start_file(format!("frames/{number}.png"), as_is)
+            .map_err(write_error)?;
+        encode_tile(tile, &mut zip)?;
     }
     for (saved, reference) in description.references.iter().zip(document.references()) {
         zip.start_file(&saved.file, as_is).map_err(write_error)?;
@@ -281,7 +365,54 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
         surface.replace_tile(coord, Some(std::sync::Arc::new(tile)));
     }
 
+    // 3b. In an animated picture, the frames' tiles, each once, and each
+    //     animated layer's drawing on every frame.
+    let mut drawings: Vec<Option<Vec<Surface>>> = Vec::new();
+    if let Some(animation) = &description.animation {
+        let mut pool: HashMap<usize, Arc<Tile>> = HashMap::new();
+        for saved in &description.layers {
+            let Some(frames) = &saved.frames else {
+                drawings.push(None);
+                continue;
+            };
+            let mut list = Vec::with_capacity(frames.len());
+            for tiles in frames {
+                let mut surface = Surface::new();
+                for (place, number) in tiles {
+                    let coord = parse_coord(place).ok_or_else(|| {
+                        FileError::Damaged(format!("a frame has a tile at \"{place}\""))
+                    })?;
+                    let tile = match pool.get(number) {
+                        Some(tile) => Arc::clone(tile),
+                        None => {
+                            let name = format!("frames/{number}.png");
+                            let mut bytes = Vec::new();
+                            archive
+                                .by_name(&name)
+                                .and_then(|mut entry| {
+                                    entry.read_to_end(&mut bytes).map_err(Into::into)
+                                })
+                                .map_err(|_| FileError::Damaged(format!("{name} is missing")))?;
+                            let tile = Arc::new(decode_tile(&bytes).map_err(|detail| {
+                                FileError::Damaged(format!("{name}: {detail}"))
+                            })?);
+                            pool.insert(*number, Arc::clone(&tile));
+                            tile
+                        }
+                    };
+                    surface.replace_tile(coord, Some(tile));
+                }
+                let _ = surface.take_dirty_tiles();
+                let _ = surface.take_thumbnail_tiles();
+                list.push(surface);
+            }
+            drawings.push(Some(list));
+        }
+        let _ = animation;
+    }
+
     // 4. Put it all together.
+    let animation = description.animation;
     let layers = description
         .layers
         .into_iter()
@@ -297,7 +428,17 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
                 clip: saved.clip,
                 lock: saved.lock,
             };
-            Layer::from_saved(LayerId(index as u64 + 1), props, surface)
+            let mut layer = Layer::from_saved(LayerId(index as u64 + 1), props, surface);
+            // An animated layer shows the drawing of the frame shown.
+            if let (Some(animation), Some(Some(mut list))) =
+                (&animation, drawings.get_mut(index).map(Option::take))
+            {
+                let locked = layer.surface.locked;
+                layer.surface = std::mem::take(&mut list[animation.current]);
+                layer.surface.locked = locked;
+                layer.drawings = Some(list);
+            }
+            layer
         })
         .collect::<Vec<_>>();
     let [r, g, b] = description.paper;
@@ -312,6 +453,22 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
         description.active_layer,
         next_number,
     );
+    if let Some(animation) = animation {
+        document.timeline = crate::frames::Timeline {
+            frames: animation
+                .holds
+                .iter()
+                .map(|&hold| crate::frames::FrameInfo {
+                    hold: hold.clamp(1, crate::frames::MAX_HOLD),
+                })
+                .collect(),
+            current: animation.current,
+            fps: animation.fps.clamp(1.0, 60.0),
+            looping: animation.looping,
+            stretches: animation.stretches,
+            pivot: animation.pivot,
+        };
+    }
 
     // 5. The reference pictures. One that can't be read is left out: the
     //    painting matters more than what was pinned beside it.
@@ -354,7 +511,36 @@ fn check_description(description: &Description) -> Result<(), FileError> {
     {
         return damaged("a layer uses a blend mode this version doesn't know");
     }
+    match &description.animation {
+        None => {
+            if description.layers.iter().any(|l| l.frames.is_some()) {
+                return damaged("a layer has frames, but the picture has none");
+            }
+        }
+        Some(animation) => {
+            let count = animation.holds.len();
+            if count == 0 || count > crate::frames::MAX_FRAMES {
+                return damaged("the number of frames is impossible");
+            }
+            if animation.current >= count {
+                return damaged("the frame shown isn't one of the frames");
+            }
+            if description
+                .layers
+                .iter()
+                .any(|l| l.frames.as_ref().is_some_and(|f| f.len() != count))
+            {
+                return damaged("an animated layer doesn't have a drawing for every frame");
+            }
+        }
+    }
     Ok(())
+}
+
+/// "5_7" -> tile (5, 7).
+fn parse_coord(text: &str) -> Option<TileCoord> {
+    let (x, y) = text.split_once('_')?;
+    Some(TileCoord::new(x.parse().ok()?, y.parse().ok()?))
 }
 
 /// "layers/2/5_7.png" -> layer 2, tile (5, 7).

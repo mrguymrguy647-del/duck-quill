@@ -51,8 +51,13 @@ pub struct Layer {
     blend: BlendMode,
     clip: bool,
     /// The pixels. Painting changes them directly. (Its `locked` flag is
-    /// the alpha lock.)
+    /// the alpha lock.) On an animated layer, the drawing of the frame
+    /// shown.
     pub surface: Surface,
+    /// An animated layer's drawing for every frame (see `frames.rs`); the
+    /// entry of the frame shown is an empty stand-in, because that drawing
+    /// is `surface`. `None`: a still layer, one drawing on every frame.
+    pub(crate) drawings: Option<Vec<Surface>>,
 }
 
 impl Layer {
@@ -66,6 +71,7 @@ impl Layer {
             blend: BlendMode::Normal,
             clip: false,
             surface: Surface::new(),
+            drawings: None,
         }
     }
 
@@ -100,6 +106,21 @@ impl Layer {
         self.surface.locked
     }
 
+    /// True for an animated layer (a drawing per frame), false for a
+    /// still one (one drawing on every frame).
+    pub fn animated(&self) -> bool {
+        self.drawings.is_some()
+    }
+
+    /// The drawing this layer shows on frame `frame`, when `current` is
+    /// the frame shown.
+    pub fn drawing(&self, frame: usize, current: usize) -> &Surface {
+        match &self.drawings {
+            Some(drawings) if frame != current => drawings.get(frame).unwrap_or(&self.surface),
+            _ => &self.surface,
+        }
+    }
+
     /// A layer rebuilt from saved settings (used when opening a file).
     pub(crate) fn from_saved(id: LayerId, props: LayerProps, mut surface: Surface) -> Self {
         surface.locked = props.lock;
@@ -111,6 +132,7 @@ impl Layer {
             blend: props.blend,
             clip: props.clip,
             surface,
+            drawings: None,
         }
     }
 

@@ -12,6 +12,7 @@ pub mod document;
 pub mod file;
 pub mod fill;
 pub mod filters;
+pub mod frames;
 pub mod gif;
 pub mod history;
 pub mod image;

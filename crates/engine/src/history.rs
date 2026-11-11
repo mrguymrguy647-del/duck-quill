@@ -42,6 +42,13 @@ pub trait Command {
 
     /// Roughly how much memory this command is keeping, in bytes.
     fn memory_size(&self) -> usize;
+
+    /// The frame shown right after this change, if the change moved
+    /// which frame is shown (adding, moving or deleting frames). Undo
+    /// needs to know where each later change was made.
+    fn frame_after(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// A change to some of a layer's tiles: a stroke, erasing, clearing.
@@ -150,11 +157,19 @@ impl Command for CommandGroup {
     fn memory_size(&self) -> usize {
         self.commands.iter().map(|c| c.memory_size()).sum()
     }
+
+    fn frame_after(&self) -> Option<usize> {
+        self.commands.iter().rev().find_map(|c| c.frame_after())
+    }
 }
 
 /// One step in the history: the change, and what it did as script commands.
 struct Step {
     command: Box<dyn Command>,
+    /// The frame shown when the change was made: undo and redo go back
+    /// there first, so the change is undone where it was made (and you
+    /// see it happen).
+    frame: usize,
     script: Vec<ScriptCommand>,
     /// A change scripts can't make (a paste, moving a selection): Export
     /// strokes says it's missing.
@@ -180,6 +195,8 @@ pub struct History {
     /// `None` if that point can't be reached any more (e.g. you undid past
     /// it and then made a new change).
     saved_at: Option<usize>,
+    /// The frame shown (see `go_to_frame`), noted with each step.
+    frame: usize,
 }
 
 impl Default for History {
@@ -199,7 +216,21 @@ impl History {
             memory_limit,
             generation: 0,
             saved_at: Some(0),
+            frame: 0,
         }
+    }
+
+    /// Shows frame `frame` of `document`, and notes it: the changes made
+    /// from now on belong to it. (Going to a frame isn't an undo step.)
+    pub fn go_to_frame(&mut self, document: &mut Document, frame: usize) {
+        document.go_to_frame(frame);
+        self.frame = document.frame();
+    }
+
+    /// Notes the frame `document` shows, if it was changed some other way
+    /// (a picture opened, a frame deleted by a command).
+    pub fn follow(&mut self, document: &Document) {
+        self.frame = document.frame();
     }
 
     /// Remembers that the picture was just saved (or freshly opened).
@@ -240,8 +271,14 @@ impl History {
         }
         self.redo.clear();
         self.generation += 1;
+        // A change to the frames moves the frame shown: later changes
+        // are made there.
+        if let Some(frame) = command.frame_after() {
+            self.frame = frame;
+        }
         self.undo.push_back(Step {
             command,
+            frame: self.frame,
             script,
             unrecordable: false,
         });
@@ -263,7 +300,9 @@ impl History {
         let Some(mut step) = self.undo.pop_back() else {
             return false;
         };
+        document.go_to_frame(step.frame);
         step.command.undo(document);
+        self.frame = document.frame();
         self.redo.push(step);
         self.generation += 1;
         true
@@ -275,7 +314,9 @@ impl History {
         let Some(mut step) = self.redo.pop() else {
             return false;
         };
+        document.go_to_frame(step.frame);
         step.command.redo(document);
+        self.frame = document.frame();
         self.undo.push_back(step);
         self.generation += 1;
         true

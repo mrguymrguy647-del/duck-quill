@@ -13,9 +13,10 @@ use crate::selection::Selection;
 use std::collections::HashSet;
 
 use crate::color::over_paper;
+use crate::frames::Timeline;
 use crate::layer::{BlendMode, Layer, LayerId, blend_over};
 use crate::stroke::TilesBefore;
-use crate::surface::{PixelRect, TileCoord};
+use crate::surface::{PixelRect, Surface, TileCoord};
 use crate::tile::{Rgba8, TILE_SIZE, Tile};
 
 /// The widest and tallest a canvas may be, in pixels. Pictures are sparse,
@@ -43,6 +44,9 @@ pub struct Document {
     selection: Option<Selection>,
     /// Pictures pinned beside the painting (saved in the file, never painted).
     references: Vec<Reference>,
+    /// The frames, and which one is shown (see `frames.rs`). A picture
+    /// that isn't animated has one frame.
+    pub(crate) timeline: Timeline,
 }
 
 impl Document {
@@ -59,6 +63,7 @@ impl Document {
             removed_tiles: HashSet::new(),
             selection: None,
             references: Vec::new(),
+            timeline: Timeline::default(),
         }
     }
 
@@ -83,6 +88,7 @@ impl Document {
             removed_tiles: HashSet::new(),
             selection: None,
             references: Vec::new(),
+            timeline: Timeline::default(),
         }
     }
 
@@ -184,6 +190,11 @@ impl Document {
         self.layers.iter().find(|layer| layer.id() == id)
     }
 
+    /// All layers, for changing (the frames code swaps their drawings).
+    pub(crate) fn layers_mut_slice(&mut self) -> &mut [Layer] {
+        &mut self.layers
+    }
+
     pub fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|layer| layer.id() == id)
     }
@@ -217,15 +228,28 @@ impl Document {
     }
 
     /// Makes a new, empty layer (not yet in the stack), named "Layer N".
+    /// In a picture with several frames it's animated: empty on every
+    /// frame, ready to be drawn on frame by frame.
     pub fn new_layer(&mut self) -> Layer {
         let number = self.next_layer_number;
         self.next_layer_number += 1;
-        Layer::new(LayerId(number), format!("Layer {number}"))
+        let mut layer = Layer::new(LayerId(number), format!("Layer {number}"));
+        if self.frame_count() > 1 {
+            layer.drawings = Some(vec![Surface::new(); self.frame_count()]);
+        }
+        layer
     }
 
     /// Puts `layer` into the stack at `index` (0 = bottom).
     pub fn insert_layer(&mut self, index: usize, mut layer: Layer) {
         layer.surface.mark_all_dirty(); // its tiles appear on screen
+        // An animated layer has a drawing for every frame.
+        let frames = self.frame_count();
+        if let Some(drawings) = &mut layer.drawings
+            && drawings.len() != frames
+        {
+            drawings.resize_with(frames, Surface::new);
+        }
         self.layers.insert(index.min(self.layers.len()), layer);
     }
 

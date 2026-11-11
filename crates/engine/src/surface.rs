@@ -298,6 +298,11 @@ impl<P: Pixel> Surface<P> {
         self.tiles.iter().map(|(&coord, tile)| (coord, &**tile))
     }
 
+    /// All the tiles that exist, as shared (for saving each once).
+    pub fn tiles_shared(&self) -> impl Iterator<Item = (TileCoord, &Arc<Tile<P>>)> {
+        self.tiles.iter().map(|(&coord, tile)| (coord, tile))
+    }
+
     /// How many tiles exist (are using memory).
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
@@ -310,6 +315,20 @@ impl<P: Pixel> Surface<P> {
         for coord in all {
             self.mark(coord);
         }
+    }
+
+    /// Notes that these tiles changed (another frame's drawing was put
+    /// where this one's was: everywhere either has paint must be redrawn).
+    pub fn mark_changed(&mut self, coords: impl IntoIterator<Item = TileCoord>) {
+        for coord in coords {
+            self.mark(coord);
+        }
+    }
+
+    /// The tiles as shared, for counting memory (a tile held by several
+    /// frames or undo steps is the same `Arc`).
+    pub fn shared_tiles(&self) -> impl Iterator<Item = &Arc<Tile<P>>> {
+        self.tiles.values()
     }
 
     /// Notes that a tile changed, for the screen and for the thumbnails.
