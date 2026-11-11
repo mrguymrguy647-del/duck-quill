@@ -203,6 +203,7 @@ The app's **Layer → Flip** and **Layer → Transform…** are written down as 
 | `grain` | Paper grain, 0 to 1 (default 0). A light touch marks only the paper's bumps; pressing harder fills the dips. The grain is fixed to the canvas, so every stroke meets the same bumps. |
 | `grain_scale` | How coarse the grain is (0.25 to 16, default 1, which is fine paper). |
 | `build_up` | The most the layer darkens however often you go over it, 0 to 1 (default 0: no limit), as graphite turns shiny grey and never black. |
+| `pixel` | `true`: each dab is a square of whole pixels `size` across, fully painted or not at all (pixel art by hand; the **Pixel pencil** preset). Default `false`. On a pixel canvas you don't need it: everything comes out whole there. |
 | `preset` | A built-in preset by name: all its settings except the colour, then any other fields in this command on top. List the presets with `quill presets`. |
 
 Only the settings given change.
@@ -213,7 +214,7 @@ Only the settings given change.
 ```
 
 The built-in presets are **Pencil (graphite)**, **Ink pen**, **Marker**, **Soft airbrush**,
-**Chalk** and **Soft eraser**. They're part of the program, so a script that names one paints
+**Chalk**, **Soft eraser**, **Pixel pencil** and **Pixel eraser**. They're part of the program, so a script that names one paints
 the same on every machine. Presets you make in the app aren't available to scripts: give the
 settings themselves instead. For the eraser preset, paint with `erase`.
 

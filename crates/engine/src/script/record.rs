@@ -67,6 +67,7 @@ fn plain_brush() -> BrushCmd {
         grain: Some(0.0),
         grain_scale: Some(1.0),
         build_up: Some(0.0),
+        pixel: Some(false),
         ..BrushCmd::default()
     }
 }
@@ -114,6 +115,7 @@ pub fn brush(settings: &BrushSettings, with_color: bool) -> Command {
         grain: Some(round(settings.grain, 3)),
         grain_scale: Some(round(settings.grain_scale, 3)),
         build_up: Some(round(settings.build_up, 3)),
+        pixel: Some(settings.pixel),
     })
 }
 
@@ -612,6 +614,7 @@ fn changed_brush_settings(known: &mut BrushCmd, new: BrushCmd) -> BrushCmd {
         grain: keep(&mut known.grain, new.grain),
         grain_scale: keep(&mut known.grain_scale, new.grain_scale),
         build_up: keep(&mut known.build_up, new.build_up),
+        pixel: keep(&mut known.pixel, new.pixel),
         color: keep(&mut known.color, new.color),
         size: keep(&mut known.size, new.size),
         opacity: keep(&mut known.opacity, new.opacity),

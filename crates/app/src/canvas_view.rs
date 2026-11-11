@@ -89,8 +89,10 @@ pub struct CanvasView {
     /// out (zooming and moving around still work).
     pub locked: bool,
     /// The animation tools are on: the Layers panel shows which layers
-    /// are animated.
+    /// are animated, and a sprite's pivot is marked.
     pub animation_tools: bool,
+    /// View → Pixel grid: lines between canvas pixels when zoomed in.
+    pub pixel_grid: bool,
     view: View,
     textures: HashMap<TileCoord, TileTexture>,
     /// Fit the canvas into the window on the first frame.
@@ -135,6 +137,7 @@ impl Default for CanvasView {
         Self {
             locked: false,
             animation_tools: false,
+            pixel_grid: true,
             view: View::default(),
             textures: HashMap::new(),
             needs_fit: true,
@@ -320,6 +323,7 @@ impl CanvasView {
             self.presets.open = open;
         }
         self.references.hidden = settings.references_hidden;
+        self.pixel_grid = !settings.pixel_grid_off;
     }
 
     /// Puts what should be remembered into `settings`.
@@ -339,6 +343,7 @@ impl CanvasView {
         settings.recent_colors = tools.recent_colors.clone();
         settings.presets_open = Some(self.presets.open);
         settings.references_hidden = self.references.hidden;
+        settings.pixel_grid_off = !self.pixel_grid;
     }
 
     /// View → Hide references.
@@ -416,6 +421,85 @@ impl CanvasView {
             self.tools.brush.size = size;
             self.tools.eraser.size = size;
         }
+    }
+
+    /// The pixel tools, for a new pixel sprite: the Pixel pencil and the
+    /// Pixel eraser, and a paint bucket that fills exactly to the edge.
+    pub fn use_pixel_tools(&mut self) {
+        let pencil = quill_engine::presets::find("Pixel pencil").and_then(|p| p.settings().ok());
+        let eraser = quill_engine::presets::find("Pixel eraser").and_then(|p| p.settings().ok());
+        if let Some(pencil) = pencil {
+            let color = self.tools.brush.color;
+            self.tools.brush = BrushSettings { color, ..pencil };
+        }
+        if let Some(eraser) = eraser {
+            self.tools.eraser = eraser;
+        }
+        self.tools.smoothing = 0.0;
+        self.tools.fill.tolerance = 0.0;
+        self.tools.fill.grow = 0;
+        self.tools.tool = Tool::Brush;
+    }
+
+    /// Lines between the canvas's pixels, once they're big enough to
+    /// draw on one at a time.
+    fn draw_pixel_grid(&self, painter: &egui::Painter, document: &Document, rect: Rect) {
+        let zoom = self.view.zoom();
+        if zoom < 8.0 || self.view.rotation() != 0.0 {
+            return;
+        }
+        let top_left = self
+            .view
+            .screen_to_canvas(Point::new(rect.left(), rect.top()));
+        let bottom_right = self
+            .view
+            .screen_to_canvas(Point::new(rect.right(), rect.bottom()));
+        let x0 = top_left.x.floor().max(0.0) as i32;
+        let x1 = bottom_right.x.ceil().min(document.width() as f32) as i32;
+        let y0 = top_left.y.floor().max(0.0) as i32;
+        let y1 = bottom_right.y.ceil().min(document.height() as f32) as i32;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let stroke = egui::Stroke::new(1.0, egui::Color32::from_black_alpha(40));
+        let at = |x: f32, y: f32| {
+            let p = self.view.canvas_to_screen(Point::new(x, y));
+            egui::pos2(p.x, p.y)
+        };
+        for x in x0..=x1 {
+            painter.line_segment([at(x as f32, y0 as f32), at(x as f32, y1 as f32)], stroke);
+        }
+        for y in y0..=y1 {
+            painter.line_segment([at(x0 as f32, y as f32), at(x1 as f32, y as f32)], stroke);
+        }
+    }
+
+    /// A sprite's pivot (where the character stands): a small cross and
+    /// a dashed ground line through it. Only on the screen, never saved.
+    fn draw_pivot(&self, painter: &egui::Painter, document: &Document) {
+        let [px, py] = document.pivot();
+        let at = |x: f32, y: f32| {
+            let p = self.view.canvas_to_screen(Point::new(x, y));
+            egui::pos2(p.x, p.y)
+        };
+        let color = egui::Color32::from_rgba_unmultiplied(220, 60, 160, 180);
+        let stroke = egui::Stroke::new(1.5, color);
+        let width = document.width() as f32;
+        painter.extend(egui::Shape::dashed_line(
+            &[at(0.0, py), at(width, py)],
+            stroke,
+            6.0,
+            4.0,
+        ));
+        let centre = at(px, py);
+        painter.line_segment(
+            [centre - egui::vec2(7.0, 0.0), centre + egui::vec2(7.0, 0.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [centre - egui::vec2(0.0, 7.0), centre + egui::vec2(0.0, 7.0)],
+            stroke,
+        );
     }
 
     /// True while an overlay (the onion skin) is shown.
@@ -626,6 +710,12 @@ impl CanvasView {
         self.update_textures(ui.ctx(), document, &visible);
         let painter = ui.painter_at(rect);
         self.paint(&painter, document, rect, &visible);
+        if self.pixel_grid {
+            self.draw_pixel_grid(&painter, document, rect);
+        }
+        if self.animation_tools && document.timeline().pivot.is_some() {
+            self.draw_pivot(&painter, document);
+        }
 
         if let Some(transform) = &mut self.transform {
             transform.draw(ui.ctx(), &painter, &self.view);

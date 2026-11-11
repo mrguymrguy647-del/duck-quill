@@ -53,6 +53,8 @@ static BUILT_IN: LazyLock<Vec<Preset>> = LazyLock::new(|| {
         include_str!("../presets/soft-airbrush.json"),
         include_str!("../presets/chalk.json"),
         include_str!("../presets/soft-eraser.json"),
+        include_str!("../presets/pixel-pencil.json"),
+        include_str!("../presets/pixel-eraser.json"),
     ]
     .into_iter()
     .map(|text| Preset::read(text).expect("the built-in presets are checked by a test"))
@@ -178,7 +180,10 @@ mod tests {
                 "Marker",
                 "Soft airbrush",
                 "Chalk",
-                "Soft eraser"
+                "Soft eraser",
+                // Added in 0.6.0 for drawing pixel sprites by hand.
+                "Pixel pencil",
+                "Pixel eraser"
             ]
         );
         for preset in built_in() {

@@ -148,6 +148,20 @@ impl DuckQuill {
                 self.animation_tools = true;
                 demo.wait = 10;
             }
+            "new_sprite" => {
+                let size = value.as_u64().unwrap_or(32) as u32;
+                self.document = quill_engine::frames::new_sprite(
+                    size,
+                    &quill_engine::frames::SPRITE_ANIMATIONS[..2],
+                );
+                self.history = quill_engine::history::History::default();
+                self.canvas.reset();
+                self.new_picture_shown();
+                self.animation_tools = true;
+                self.canvas.use_pixel_tools();
+                demo.wait = 10;
+            }
+            "settings" => self.settings_open = value.as_bool().unwrap_or(true),
             "layer" => {
                 let wanted = value.as_str().unwrap_or_default();
                 match self.document.layers().iter().find(|l| l.name() == wanted) {
@@ -165,6 +179,9 @@ impl DuckQuill {
                     _ => Tool::Brush,
                 };
                 let size = value.get("size").and_then(Value::as_f64).map(|s| s as f32);
+                if tool != Tool::Fill && value.get("pixel").and_then(Value::as_bool) == Some(true) {
+                    self.canvas.use_pixel_tools();
+                }
                 self.canvas
                     .choose(tool, value.get("color").and_then(color), size);
             }

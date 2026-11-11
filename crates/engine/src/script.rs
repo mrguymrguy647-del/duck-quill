@@ -814,6 +814,9 @@ pub struct BrushCmd {
     /// The most a layer darkens from going over it again, 0..1 (0: no limit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_up: Option<f32>,
+    /// Whole pixels, hard edged (pixel art drawn by hand).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel: Option<bool>,
 }
 
 /// `select`: from here on, every painting command stays inside the

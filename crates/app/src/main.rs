@@ -136,6 +136,8 @@ struct DuckQuill {
     animation_tools: bool,
     /// The "This picture has 8 frames" note was closed for this picture.
     note_closed: bool,
+    /// The Settings window is open.
+    settings_open: bool,
     /// The frames shown came from this painting script, and drawing on
     /// them waits for "Edit frames by hand".
     from_script: Option<String>,
@@ -249,6 +251,7 @@ impl DuckQuill {
             timeline,
             animation_tools,
             note_closed: false,
+            settings_open: false,
             from_script,
             about: about::About::default(),
             shortcut_sheet: ShortcutSheet::default(),
@@ -350,6 +353,34 @@ impl DuckQuill {
             }
             None => {}
         }
+    }
+
+    /// File → Settings: what can be switched on and off, all in one place
+    /// (the same switches as in the menus).
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.checkbox(&mut self.animation_tools, "Animation tools")
+                    .on_hover_text("Also in View");
+                ui.weak("   The timeline and the Animation menu, for drawing frame by frame.");
+                ui.weak("   Off, Duck Quill is a plain drawing app; frames are never lost.");
+                ui.add_space(6.0);
+                ui.checkbox(&mut self.canvas.pixel_grid, "Pixel grid")
+                    .on_hover_text("Also in View");
+                ui.weak("   Lines between the pixels when you zoom in close.");
+                ui.add_space(6.0);
+                theme::theme_menu(ui);
+            });
+        self.settings_open &= open;
     }
 
     /// A different picture is shown: frames, notes and the onion skin
@@ -839,6 +870,8 @@ impl eframe::App for DuckQuill {
                         ui.close();
                     }
                     ui.checkbox(self.canvas.references_hidden(), "Hide reference pictures");
+                    ui.checkbox(&mut self.canvas.pixel_grid, "Pixel grid")
+                        .on_hover_text("Lines between the pixels when you zoom in close");
                     ui.separator();
                     ui.checkbox(&mut self.animation_tools, "Animation tools")
                         .on_hover_text("The timeline and the Animation menu, for drawing frame by frame");
@@ -956,8 +989,16 @@ impl eframe::App for DuckQuill {
             self.canvas.fit_text_size(self.document.height());
             self.new_picture_shown();
         }
+        if self.files.take_settings_request() {
+            self.settings_open = true;
+        }
+        self.settings_window(ui.ctx());
         if self.files.take_made_animation() {
             self.animation_tools = true;
+            // A pixel sprite or tile: the pixel tools.
+            if self.document.width().max(self.document.height()) <= 128 {
+                self.canvas.use_pixel_tools();
+            }
         }
         if let Some(choice) = self.files.take_animation_export() {
             self.export_animation(frame, choice);

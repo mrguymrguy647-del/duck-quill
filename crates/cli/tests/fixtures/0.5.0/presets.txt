@@ -26,5 +26,13 @@ Chalk
 Soft eraser (an eraser: paint with `erase`)
   A big soft eraser for lifting pencil and fading edges; pressing harder makes it bigger.
   {"size":60.0,"opacity":1.0,"flow":1.0,"hardness":0.0,"spacing":0.05,"pressure_size":true,"pressure_opacity":false,"pressure_flow":false,"tip":"round","pressure_size_min":0.3}
+
+Pixel pencil
+  Pixel art: whole pixels, hard edges, nothing see-through. Size 1 draws one pixel at a time; zoom in to see the grid.
+  {"size":1.0,"opacity":1.0,"flow":1.0,"hardness":1.0,"spacing":0.1,"pressure_size":false,"pressure_opacity":false,"pressure_flow":false,"pixel":true}
+
+Pixel eraser (an eraser: paint with `erase`)
+  Rubs out whole pixels, nothing half-erased: for pixel art.
+  {"size":1.0,"opacity":1.0,"flow":1.0,"hardness":1.0,"spacing":0.1,"pressure_size":false,"pressure_opacity":false,"pressure_flow":false,"pixel":true}
 --- stderr
 --- exit code 0

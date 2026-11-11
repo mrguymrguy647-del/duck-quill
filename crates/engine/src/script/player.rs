@@ -5706,6 +5706,9 @@ pub(crate) fn apply_brush_fields(
     if let Some(limit) = command.build_up {
         brush.build_up = unit("build_up", limit)?;
     }
+    if let Some(pixel) = command.pixel {
+        brush.pixel = pixel;
+    }
     Ok(())
 }
 

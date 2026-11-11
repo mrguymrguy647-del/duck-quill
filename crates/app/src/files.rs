@@ -67,6 +67,8 @@ pub enum FileAction {
     /// File → Open recent: the picture at this place in the list.
     OpenRecent(usize),
     ClearRecent,
+    /// File → Settings: the app opens its Settings window.
+    Settings,
 }
 
 /// A script to start playing, handed over to the app.
@@ -149,6 +151,8 @@ pub struct Files {
     /// A new animation or sprite was just made: the app turns the
     /// animation tools on.
     made_animation: bool,
+    /// File → Settings was chosen.
+    settings_requested: bool,
     /// The size chosen last time, offered again in the New window.
     last_new_size: Option<[u32; 2]>,
     error: Option<ErrorMessage>,
@@ -204,6 +208,7 @@ impl Files {
             ("Play strokes…", None, FileAction::PlayStrokes),
             ("Export strokes…", None, FileAction::ExportStrokes),
             ("Export animation…", None, FileAction::ExportAnimation),
+            ("Settings…", None, FileAction::Settings),
         ];
         let button = Button::new("File").min_size(vec2(56.0, 26.0));
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
@@ -229,7 +234,9 @@ impl Files {
                 // Lines between saving, exporting and scripts.
                 if matches!(
                     action,
-                    FileAction::SaveAs | FileAction::Export(Background::Transparent)
+                    FileAction::SaveAs
+                        | FileAction::Export(Background::Transparent)
+                        | FileAction::ExportAnimation
                 ) {
                     ui.separator();
                 }
@@ -492,6 +499,7 @@ impl Files {
                     self.recent.clear();
                     self.recent_changed = true;
                 }
+                FileAction::Settings => self.settings_requested = true,
             }
         }
         if self.asking_animation_export {
@@ -901,6 +909,11 @@ impl Files {
                 None
             }
         }
+    }
+
+    /// True once after File → Settings was chosen.
+    pub fn take_settings_request(&mut self) -> bool {
+        std::mem::take(&mut self.settings_requested)
     }
 
     /// The picture isn't the file it came from any more (frames from a

@@ -1,0 +1,17 @@
+{
+  "format": "duckquill-preset",
+  "name": "Pixel pencil",
+  "description": "Pixel art: whole pixels, hard edges, nothing see-through. Size 1 draws one pixel at a time; zoom in to see the grid.",
+  "smoothing": 0,
+  "brush": {
+    "size": 1,
+    "opacity": 1,
+    "flow": 1,
+    "hardness": 1,
+    "spacing": 0.1,
+    "pressure_size": false,
+    "pressure_opacity": false,
+    "pressure_flow": false,
+    "pixel": true
+  }
+}

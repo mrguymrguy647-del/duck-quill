@@ -332,6 +332,13 @@ impl Stroke {
         )
         .intersect(&self.limits);
         let centre = StrokePoint::new(cx, cy, pressure);
+        // Pixel art: the whole pixels of a square `side` across around
+        // the dab's centre, from `pixel_left`, `pixel_top`.
+        let side = (2.0 * dab.radius).round().max(1.0) as i32;
+        let (pixel_left, pixel_top) = (
+            (cx - side as f32 / 2.0).round() as i32,
+            (cy - side as f32 / 2.0).round() as i32,
+        );
         let (sin, cos) = dab.angle.to_radians().sin_cos();
         let varies_color = self.brush.dynamics.varies_color();
         let tooth = self.brush.tooth(pressure);
@@ -369,6 +376,11 @@ impl Stroke {
                     let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
                     let distance = dx.hypot(dy);
                     let shape = match &self.tip {
+                        _ if self.brush.pixel => {
+                            let inside = (pixel_left..pixel_left + side).contains(&x)
+                                && (pixel_top..pixel_top + side).contains(&y);
+                            if inside { 1.0 } else { 0.0 }
+                        }
                         None => dab_coverage(distance, dab.radius, self.brush.hardness),
                         Some(tip) => {
                             // Into the tip's own square: turned back, and
@@ -998,6 +1010,61 @@ mod tests {
             layer.pixel(45, 30),
             Rgba8::TRANSPARENT,
             "outside the mask's box"
+        );
+    }
+
+    #[test]
+    fn a_pixel_brush_paints_whole_pixels_and_nothing_see_through() {
+        let brush = BrushSettings {
+            size: 1.0,
+            pixel: true,
+            pressure_size: false,
+            pressure_opacity: false,
+            color: [200, 30, 30],
+            ..BrushSettings::default()
+        };
+        let mut layer = Surface::new();
+        let mut stroke = Stroke::new(brush, PixelRect::new(0, 0, 64, 64));
+        // A slanted line, with a pen's changing pressure.
+        for i in 0..=40 {
+            let t = i as f32 / 40.0;
+            stroke.add_point(
+                &mut layer,
+                StrokePoint::new(2.3 + 20.0 * t, 3.7 + 9.0 * t, 0.3 + 0.7 * t),
+            );
+        }
+        stroke.finish(&mut layer);
+        let mut painted = 0;
+        for y in 0..64 {
+            for x in 0..64 {
+                let a = layer.pixel(x, y).a;
+                assert!(
+                    a == 0 || a == 255,
+                    "pixel ({x}, {y}) is half see-through: {a}"
+                );
+                painted += usize::from(a == 255);
+            }
+        }
+        // One pixel per column along the line (no gaps, no blur).
+        assert!((21..=32).contains(&painted), "{painted}");
+        for x in 3..22 {
+            assert!(
+                (0..64).any(|y| layer.pixel(x, y).a == 255),
+                "a gap at x {x}"
+            );
+        }
+        // Size 3: a 3 x 3 block.
+        let mut layer = Surface::new();
+        let mut stroke = Stroke::new(
+            BrushSettings { size: 3.0, ..brush },
+            PixelRect::new(0, 0, 64, 64),
+        );
+        stroke.add_point(&mut layer, StrokePoint::new(10.5, 10.5, 1.0));
+        stroke.finish(&mut layer);
+        let area = layer.painted_area().unwrap();
+        assert_eq!(
+            (area.left, area.top, area.right, area.bottom),
+            (9, 9, 12, 12)
         );
     }
 }

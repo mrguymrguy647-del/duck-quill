@@ -33,6 +33,8 @@ pub struct Settings {
     pub references_hidden: bool,
     /// View → Animation tools: the timeline and the Animation menu.
     pub animation_tools: bool,
+    /// View → Pixel grid (on unless switched off).
+    pub pixel_grid_off: bool,
 }
 
 /// The window's size (in screen points) when it isn't maximized, and

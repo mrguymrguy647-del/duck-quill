@@ -180,3 +180,96 @@ fn timings_on_a_4000_by_3000_picture_with_20_layers() {
         document.clone()
     });
 }
+
+/// The speed the brief asks about: 24 frames of 1024 x 1024 with four
+/// layers (a still background, three animated), stepping, playing and
+/// saving. Stepping is going to a frame and working out the screen's
+/// changed tiles, as the canvas does.
+#[test]
+#[ignore = "timings: run with --release --ignored --nocapture"]
+fn timings_of_24_frames_of_1024_by_1024() {
+    use quill_engine::document::Background;
+    use quill_engine::frames::{AnimatedCommand, FrameCommand};
+    use quill_engine::layer_commands::LayerPresenceCommand;
+    use quill_engine::tile::Rgba8;
+
+    let mut document = Document::new(1024, 1024);
+    document.active_layer_mut().surface.paint_pixels(
+        quill_engine::surface::PixelRect::new(0, 0, 1024, 1024),
+        |_, _| Some(Rgba8::new(190, 225, 245, 255)),
+    );
+    let mut animated = Vec::new();
+    for _ in 0..3 {
+        let _ = LayerPresenceCommand::add_layer(&mut document);
+        let id = document.active_id();
+        AnimatedCommand::set(&mut document, id, true).unwrap();
+        animated.push(id);
+    }
+    time("make 24 frames", || {
+        for _ in 1..24 {
+            let end = document.frame_count();
+            FrameCommand::add(&mut document, end).unwrap();
+        }
+    });
+    // Each frame: a long stroke on each animated layer, in a different place.
+    time("paint a stroke on 3 layers of each of 24 frames", || {
+        for frame in 0..24 {
+            document.go_to_frame(frame);
+            for (i, id) in animated.iter().enumerate() {
+                document.set_active(*id);
+                let brush = BrushSettings {
+                    size: 40.0,
+                    ..BrushSettings::default()
+                };
+                let mut stroke = Stroke::new(brush, document.bounds());
+                let surface = &mut document.active_layer_mut().surface;
+                for step in 0..=200 {
+                    let t = step as f32 / 200.0;
+                    let x = 100.0 + 800.0 * t;
+                    let y = 200.0 + 250.0 * i as f32 + 60.0 * (t * 6.0 + frame as f32 * 0.4).sin();
+                    stroke.add_point(surface, StrokePoint::new(x, y, 0.8));
+                }
+                stroke.finish(surface);
+            }
+        }
+    });
+    println!(
+        "{:<50} {:>7.1} MB (one full frame would be {:.1} MB; 24 copies {:.1} MB)",
+        "memory of all the pixels",
+        document.pixel_memory() as f64 / 1e6,
+        (4 * 16 * 256 * 256 * 4) as f64 / 1e6,
+        (24 * 4 * 16 * 256 * 256 * 4) as f64 / 1e6
+    );
+    let _ = document.take_dirty_tiles();
+    let step = |document: &mut Document, frame: usize| {
+        document.go_to_frame(frame);
+        for coord in document.take_dirty_tiles() {
+            let _ = document.composite_tile(coord, Background::Paper);
+        }
+    };
+    let started = std::time::Instant::now();
+    for frame in 1..=48 {
+        step(&mut document, frame % 24);
+    }
+    let each = started.elapsed().as_secs_f64() * 1000.0 / 48.0;
+    println!(
+        "{:<50} {:>7.1} ms",
+        "one step to the next frame (screen worked out)", each
+    );
+    println!(
+        "{:<50} {:>7.1} ms (of 1000: {:.0}% of the time)",
+        "a second of playing at 24 fps",
+        each * 24.0,
+        each * 24.0 / 10.0
+    );
+    let path = std::env::temp_dir().join(format!("timing-24-frames-{}.quill", std::process::id()));
+    time("save all 24 frames", || {
+        quill_engine::file::save(&document, &path).unwrap()
+    });
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!("{:<50} {:>7.1} MB", "the file", size as f64 / 1e6);
+    time("open them again", || {
+        quill_engine::file::open(&path).unwrap()
+    });
+    let _ = std::fs::remove_file(&path);
+}

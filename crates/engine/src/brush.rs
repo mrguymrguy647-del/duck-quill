@@ -182,6 +182,10 @@ pub struct BrushSettings {
     /// The most a layer darkens however often you go over it, 0..1, as
     /// graphite goes shiny grey, never black. 0: no limit.
     pub build_up: f32,
+    /// Pixel art: each dab is a square of whole pixels, `size` across
+    /// (rounded, at least 1), fully covered or not at all: no soft edge,
+    /// nothing see-through. For drawing pixel sprites by hand.
+    pub pixel: bool,
 }
 
 impl Default for BrushSettings {
@@ -207,6 +211,7 @@ impl Default for BrushSettings {
             grain: 0.0,
             grain_scale: 1.0,
             build_up: 0.0,
+            pixel: false,
         }
     }
 }

@@ -82,3 +82,42 @@ stroke does the same work as before (the one copy of each tile it touches is now
 the tile is first painted on, where before it was made for undo). The clear change is the copy
 of a whole picture: it no longer copies any pixels, which is what makes frames and autosave
 copies cheap.
+
+## Painting speed at the end of Step 2 (frames, timeline, pixel tools in)
+
+Best of three, the same test as the "before" at the top.
+
+| What | Before (ms) | Now (ms) |
+|---|---|---|
+| make 20 painted layers | 1471.3 | 1406.0 |
+| long stroke, size 60, no selection | 92.8 | 79.8 |
+| long stroke, size 60, pencil (grain) | 188.5 | 162.7 |
+| long stroke, size 60, four-way symmetry | 324.7 | 307.9 |
+| blur 8 px, no selection | 647.7 | 586.6 |
+| select a big ellipse | 154.4 | 128.6 |
+| feather it by 30 px | 137.2 | 128.2 |
+| its outline (marching ants) | 41.8 | 37.3 |
+| long stroke, size 60, inside the selection | 77.8 | 73.1 |
+| paint bucket inside the selection | 33.1 | 32.1 |
+| blur 8 px inside the selection | 639.9 | 600.4 |
+| copy the selection | 44.3 | 34.8 |
+| the whole picture, all 20 layers combined | 782.3 | 661.3 |
+| a copy of the document (as autosave would) | 120.9 | under 0.1 |
+
+Gallery renders (best of three): sunset-pond-v3 1.98 s before, 1.55 s now;
+forest-at-dawn 2.92 s, 2.22 s; duck-portrait-v2 0.81 s, 0.78 s. Nothing got slower.
+
+## Animation: memory and speed (24 frames of 1024 x 1024)
+
+`timings_of_24_frames_of_1024_by_1024` in `crates/engine/tests/big_canvas.rs`: a full
+still background and three animated layers, a long stroke on each animated layer of each
+frame.
+
+| What | |
+|---|---|
+| memory of all the pixels | 115.9 MB (24 full copies would be 402.7 MB; one frame is 16.8 MB) |
+| one step to the next frame, with the screen worked out | 22.7 ms |
+| a second of playing at 24 fps | 544 ms of work (54% of the time) |
+| save all 24 frames | 44.6 ms, a 1.9 MB file |
+| open them again | 95.8 ms |
+| paint a stroke on 3 layers of each of 24 frames | 540 ms (22 ms per frame) |
