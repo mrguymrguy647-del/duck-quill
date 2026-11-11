@@ -649,6 +649,59 @@ pub struct Player {
     /// Palette colours that came from included files (not the script's
     /// own, so not "never used" warnings), and which file each came from.
     included_colors: HashMap<String, String>,
+    /// Every name a command writes down (see `named_in`): a colour or
+    /// symbol among them is used by the script, whether or not the frame
+    /// being painted reaches it.
+    named: HashSet<String>,
+}
+
+/// Every string the commands of `script` (and of all its animations)
+/// write as a value, and the keys of every `colors` map: the names the
+/// script uses for colours and symbols. Labels don't count: a `name`
+/// (except a `use`'s, which says which symbol), a `text`'s words.
+///
+/// "Never used" warnings go by this as well as by what was painted, so
+/// a colour used only by a symbol that this frame doesn't show, or by a
+/// tile that's exported but never placed, isn't blamed.
+fn named_in(script: &Script) -> HashSet<String> {
+    fn walk(value: &Value, named: &mut HashSet<String>) {
+        match value {
+            Value::String(text) => {
+                named.insert(text.clone());
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, named)),
+            Value::Object(fields) => {
+                let is_use = fields.get("cmd").and_then(Value::as_str) == Some("use");
+                for (key, value) in fields {
+                    match key.as_str() {
+                        "cmd" | "text" => {}
+                        "name" if !is_use => {}
+                        "colors" => {
+                            if let Value::Object(map) = value {
+                                named.extend(map.keys().cloned());
+                            }
+                            walk(value, named);
+                        }
+                        _ => walk(value, named),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut named = HashSet::new();
+    let lists = std::iter::once(&script.commands).chain(
+        script
+            .animations
+            .values()
+            .map(|animation| &animation.commands),
+    );
+    for commands in lists {
+        if let Ok(value) = serde_json::to_value(commands) {
+            walk(&value, &mut named);
+        }
+    }
+    named
 }
 
 impl Player {
@@ -719,6 +772,7 @@ impl Player {
                 ))
             })
             .collect::<Result<_, ScriptError>>()?;
+        let named = named_in(&script);
         let pixel = match script.commands.first() {
             Some(Command::Canvas(canvas)) => pixel_mode(canvas, &palette)
                 .map_err(|m| ScriptError::in_command(0, Some("canvas"), m))?,
@@ -780,6 +834,7 @@ impl Player {
             selection: None,
             clip_cache: None,
             included_colors: HashMap::new(),
+            named,
         })
     }
 
@@ -1700,8 +1755,30 @@ impl Player {
             silhouettes: self.silhouettes.clone(),
             warnings,
             defined: self.defined.clone(),
-            used_symbols: self.used_symbols.iter().cloned().collect(),
-            used_colors: self.used_colors.borrow().iter().cloned().collect(),
+            // Used: reached while painting this frame, or named by a
+            // command anywhere in the script (see `named_in`).
+            used_symbols: self
+                .used_symbols
+                .iter()
+                .chain(
+                    self.defined
+                        .iter()
+                        .map(|(name, _)| name)
+                        .filter(|name| self.named.contains(*name)),
+                )
+                .cloned()
+                .collect(),
+            used_colors: self
+                .used_colors
+                .borrow()
+                .iter()
+                .chain(
+                    self.palette
+                        .keys()
+                        .filter(|name| self.named.contains(*name)),
+                )
+                .cloned()
+                .collect(),
             palette: self
                 .palette
                 .keys()
@@ -6568,27 +6645,87 @@ mod tests {
 
     #[test]
     fn unused_symbols_and_palette_colours_are_reported() {
-        let report = report_of(&small(
-            r##"{ "cmd": "define", "name": "tree", "commands": [
+        let report = report_of(
+            r##"{ "palette": { "ink": "#202020", "red": "#E02020", "blue": "#2020E0" }, "commands": [
+                { "cmd": "canvas", "width": 200, "height": 200 },
+                { "cmd": "define", "name": "tree", "commands": [
                     { "cmd": "rect", "x": 0, "y": 0, "width": 10, "height": 10, "fill": "red" } ] },
-                { "cmd": "rect", "x": 0, "y": 0, "width": 10, "height": 10, "fill": "ink" }"##,
-        ));
+                { "cmd": "rect", "x": 0, "y": 0, "width": 10, "height": 10, "fill": "ink" } ] }"##,
+        );
         assert_eq!(
             unused_warnings(&[&report]),
             [
                 r#"symbol "tree" (command 2) is defined but never used"#,
-                // Only used inside the symbol that's never used.
-                r#"palette colour "red" is never used"#,
+                // "red" is named inside that symbol, so it isn't blamed
+                // as well (until 0.6.0 it was: the symbol's warning said
+                // it all, and in a script of tiles to export every
+                // colour was blamed). "blue" is named by nothing.
+                r#"palette colour "blue" is never used"#,
             ]
         );
         assert!(report.warnings.is_empty());
     }
 
     #[test]
+    fn colours_used_only_inside_symbols_are_not_called_unused() {
+        // The shape of the Duck Craft atlas: 63 colours, every one used
+        // only inside a `define`d tile (through a `pixels` `colors` map,
+        // a fill, a colour swap or a keyframe), each tile shown by its
+        // own one-frame animation. One frame used to blame the colours
+        // of every other tile. A colour nothing names is still reported.
+        let mut palette = vec![
+            "\"spare\": \"#FF00FF\"".to_owned(),
+            "\"ink\": \"#202020\"".to_owned(),
+        ];
+        let mut defines = vec![
+            r##"{ "cmd": "define", "name": "dot", "commands": [
+                { "cmd": "rect", "x": 1, "y": 1, "width": 1, "height": 1, "fill": "ink" } ] }"##
+                .to_owned(),
+        ];
+        let mut animations = Vec::new();
+        for tile in 0..21 {
+            let names: Vec<String> = (0..3).map(|i| format!("t{tile}c{i}")).collect();
+            for (i, name) in names.iter().enumerate() {
+                palette.push(format!(
+                    "\"{name}\": \"#{:02X}{:02X}{:02X}\"",
+                    tile * 10,
+                    i * 80,
+                    99
+                ));
+            }
+            defines.push(format!(
+                r##"{{ "cmd": "define", "name": "tile{tile}", "commands": [
+                    {{ "cmd": "rect", "x": 0, "y": 0, "width": 4, "height": 4, "fill": "{}" }},
+                    {{ "cmd": "pixels", "at": [0, 0], "colors": {{ "a": "{}" }}, "rows": ["a.a"] }},
+                    {{ "cmd": "use", "name": "dot", "colors": {{ "ink": "{}" }} }} ] }}"##,
+                names[0], names[1], names[2]
+            ));
+            animations.push(format!(
+                r##""tile{tile}": {{ "frames": 1, "commands": [ {{ "cmd": "use", "name": "tile{tile}" }} ] }}"##
+            ));
+        }
+        let text = format!(
+            r##"{{ "palette": {{ {} }}, "commands": [
+                {{ "cmd": "canvas", "width": 4, "height": 4, "pixel": true }}, {} ],
+              "animations": {{ {} }} }}"##,
+            palette.join(", "),
+            defines.join(", "),
+            animations.join(", ")
+        );
+        // One frame of one animation, as `render` paints it.
+        let report = report_of(&text);
+        assert_eq!(report.palette.len(), 65, "63 tile colours, ink and spare");
+        assert_eq!(
+            unused_warnings(&[&report]),
+            [r#"palette colour "spare" is never used"#]
+        );
+    }
+
+    #[test]
     fn use_in_any_frame_of_any_animation_counts() {
         // "blink" is only used at frame 3 (through a keyframed parameter),
         // and "red" only in the second animation.
-        let text = r##"{ "palette": { "ink": "#202020", "red": "#E02020", "blue": "#2020E0" }, "commands": [
+        let text = r##"{ "palette": { "ink": "#202020", "red": "#E02020", "blue": "#2020E0", "spare": "#20E020" }, "commands": [
             { "cmd": "canvas", "width": 50, "height": 50 },
             { "cmd": "define", "name": "open", "commands": [ { "cmd": "rect", "x": 0, "y": 0, "width": 4, "height": 4, "fill": "ink" } ] },
             { "cmd": "define", "name": "blink", "commands": [ { "cmd": "rect", "x": 0, "y": 0, "width": 4, "height": 1, "fill": "ink" } ] },
@@ -6623,11 +6760,14 @@ mod tests {
             unused_warnings(&all),
             [
                 r#"symbol "never" (command 4) is defined but never used"#,
-                r#"palette colour "blue" is never used"#
+                r#"palette colour "spare" is never used"#
             ]
         );
-        // Frame 0 alone would have blamed "blink" and "red" too.
-        assert_eq!(unused_warnings(&all[..1]).len(), 4);
+        // Frame 0 alone says the same: "blink" (swapped in at frame 3)
+        // and "red" (the other animation's) are named by commands, so
+        // one frame is enough to know they're used. Until 0.6.0 a
+        // single frame blamed both, which is what `render` printed.
+        assert_eq!(unused_warnings(&all[..1]), unused_warnings(&all));
     }
 
     #[test]

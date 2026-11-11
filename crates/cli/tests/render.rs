@@ -578,17 +578,18 @@ fn check_counts_use_over_every_frame_and_says_which_frames_warn() {
     };
     let (code, text, _) = check(&[]);
     assert_eq!(code, Some(0));
-    // "blink" (frame 5) and "red" (the other animation) are used; "never" and "blue" aren't.
+    // "blink" (frame 5) and "red" (the other animation) are used; "never" isn't.
     assert!(!text.contains("\"blink\""), "{text}");
     assert!(!text.contains("colour \"red\""), "{text}");
     assert!(
         text.contains("symbol \"never\" (command 4) is defined but never used"),
         "{text}"
     );
-    assert!(
-        text.contains("palette colour \"blue\" is never used"),
-        "{text}"
-    );
+    // "blue" is used only inside "never". Until 0.6.0 it was reported
+    // too; now a colour that a symbol names counts as used (phase 6,
+    // fix 5: in a script of tiles every colour was blamed that way),
+    // and the symbol's own warning says what's wrong.
+    assert!(!text.contains("colour \"blue\""), "{text}");
     // The flyer is off the canvas in frames 2 to 4 but on it in the
     // others: an exit and a return, not a mistake. "lost" never is on it.
     assert!(
