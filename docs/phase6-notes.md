@@ -34,3 +34,21 @@ Run-to-run noise on this machine is about 10 to 15 percent.
 
 - `cargo build --release -p quill_cli` from nothing: about 36 s; as one file that runs on any
   Linux (`--target x86_64-unknown-linux-musl`): works, 5.9 MB.
+
+## Step 1: before and after, with the real programs
+
+The 0.5.0 `quill` and today's, run on the same scripts (the scripts are the tests'
+own: `TILES` and the others in `crates/cli/tests/render.rs`).
+
+| # | What was tried | 0.5.0 | Now |
+|---|---|---|---|
+| 1 | Getting `quill` on Linux | build it (36 s alone, minutes with the whole workspace) | download `quill-linux-x86_64.tar.gz` (25 MB, one file that needs nothing installed); a test fails if `quill` ever depends on a window library |
+| 2 | `quill export` on a script of three tiles, no animations | `error: this script has no animations` | `Exported: 3 stills`, `tiles.png` and `tiles.json` in the tileset format |
+| 3 | A script with `speckle` | `unknown variant speckle` | a 16 x 16 grass tile; `render --tile`: "opposite edges meet" |
+| 4 | A script with `skin_box` | `unknown variant skin_box` | 12 regions listed by `check`, `skin.regions.json` beside `skin.png` |
+| 5 | `check` on the script of tiles | 10 warnings, 9 of them false | 1 warning, the true one (`"spare" is never used`) |
+| 5 | `render` on tiles shown by one-frame animations | 6 warnings, 5 false | 1 warning, the true one |
+| 6 | `pixels` with keys `g1`, `g2` | `` `colors` keys are single characters `` | paints; a bad cell: `row 2 has "zz" at column 4` |
+
+Also found and fixed while testing these: on a pixel canvas, `check` lost which commands
+painted each layer (and could call a painted layer empty in every frame).
