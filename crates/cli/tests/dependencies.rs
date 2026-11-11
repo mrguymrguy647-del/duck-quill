@@ -66,11 +66,17 @@ fn packages_of(package: &str) -> Vec<String> {
     packages
 }
 
+/// Libraries every program uses on Windows (files, time, threads),
+/// whose names only look like window libraries.
+const SYSTEM_LIBRARIES: &[&str] = &["windows-sys", "windows-link", "windows-targets"];
+
 /// Those of `packages` that are window libraries (or parts of one,
 /// like `egui-winit` or `wgpu_core`).
 fn window_libraries(packages: &[String]) -> Vec<&String> {
     packages
         .iter()
+        .filter(|name| !SYSTEM_LIBRARIES.contains(&name.as_str()))
+        .filter(|name| !name.starts_with("windows_")) // windows-targets' parts
         .filter(|name| {
             WINDOW_LIBRARIES.iter().any(|library| {
                 *name == library
@@ -79,6 +85,25 @@ fn window_libraries(packages: &[String]) -> Vec<&String> {
             })
         })
         .collect()
+}
+
+#[test]
+fn system_libraries_are_not_taken_for_window_libraries() {
+    let names: Vec<String> = [
+        "windows-sys",
+        "windows-link",
+        "windows_x86_64_msvc",
+        "windows",
+        "egui-winit",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let found: Vec<&str> = window_libraries(&names)
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    assert_eq!(found, ["windows", "egui-winit"]);
 }
 
 #[test]
