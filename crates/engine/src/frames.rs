@@ -1390,6 +1390,139 @@ mod tests {
         assert_eq!(sprite.frame(), 0);
     }
 
+    /// A stroke on frame `frame` of the Duck layer, left to right at y 50,
+    /// kept inside `clip` and mirrored by `symmetry` if given.
+    fn stroke_on(
+        document: &mut Document,
+        history: &mut History,
+        frame: usize,
+        clip: Option<std::sync::Arc<crate::fill::Mask>>,
+        symmetry: Option<crate::stroke::Symmetry>,
+    ) {
+        history.go_to_frame(document, frame);
+        let layer = document.active_id();
+        let brush = crate::brush::BrushSettings {
+            size: 8.0,
+            ..Default::default()
+        };
+        let mut stroke = crate::stroke::Stroke::new(brush, document.bounds());
+        if let Some(clip) = clip {
+            stroke = stroke.clipped(clip);
+        }
+        if let Some(symmetry) = symmetry {
+            stroke = stroke.mirrored(symmetry);
+        }
+        let surface = &mut document.active_layer_mut().surface;
+        for x in (10..=200).step_by(5) {
+            stroke.add_point(
+                surface,
+                crate::stroke::StrokePoint::new(x as f32, 50.0, 1.0),
+            );
+        }
+        let before = stroke.finish(surface);
+        history.push(Box::new(TileCommand::new("Stroke", layer, before)));
+    }
+
+    #[test]
+    fn selections_symmetry_transform_and_references_work_on_every_frame() {
+        let mut document = animation(3);
+        let mut history = History::default();
+        // A selection belongs to the picture: it stays put from frame to
+        // frame, and paint on frame 2 stays inside it there.
+        let limits = document.bounds();
+        let selection = crate::selection::Selection::new(crate::selection::ellipse(
+            100.0, 50.0, 30.0, 30.0, limits,
+        ))
+        .unwrap();
+        document.set_selection(Some(selection));
+        history.go_to_frame(&mut document, 2);
+        assert!(document.selection().is_some(), "still selected on frame 2");
+        let clip = document.clip();
+        stroke_on(&mut document, &mut history, 2, clip, None);
+        let on_2 = document.frame_picture(2).layers()[1]
+            .surface
+            .painted_area()
+            .unwrap();
+        assert!(
+            on_2.left >= 69 && on_2.right <= 131,
+            "inside the selection: {on_2:?}"
+        );
+        assert!(
+            document.frame_picture(0).layers()[1]
+                .surface
+                .painted_area()
+                .is_none()
+        );
+        document.set_selection(None);
+        // Symmetry on frame 1: both halves there, nothing on frame 0.
+        let symmetry = crate::stroke::Symmetry {
+            centre: (300.0, 150.0),
+            vertical: true,
+            horizontal: false,
+            angle: 0.0,
+        };
+        stroke_on(&mut document, &mut history, 1, None, Some(symmetry));
+        let mirrored = document.frame_picture(1).layers()[1]
+            .surface
+            .painted_area()
+            .unwrap();
+        assert!(mirrored.left <= 10 && mirrored.right >= 590, "{mirrored:?}");
+        assert!(
+            document.frame_picture(0).layers()[1]
+                .surface
+                .painted_area()
+                .is_none()
+        );
+        // Moving the drawing of frame 1 moves only frame 1's.
+        history.go_to_frame(&mut document, 1);
+        let duck = document.active_id();
+        let before = crate::layer_transform::transform_layer(
+            &mut document,
+            duck,
+            crate::transform::Transform::translate(0.0, 100.0),
+        );
+        history.push(Box::new(TileCommand::new("Move", duck, before)));
+        let moved = document.frame_picture(1).layers()[1]
+            .surface
+            .painted_area()
+            .unwrap();
+        assert!(moved.top >= 140, "{moved:?}");
+        let on_2_again = document.frame_picture(2).layers()[1]
+            .surface
+            .painted_area()
+            .unwrap();
+        assert_eq!(on_2_again, on_2, "frame 2 didn't move");
+        // Undo from frame 0 goes back to frame 1 and puts it back.
+        history.go_to_frame(&mut document, 0);
+        history.undo(&mut document);
+        assert_eq!(document.frame(), 1);
+        assert_eq!(
+            document.active_layer().surface.painted_area().unwrap(),
+            mirrored
+        );
+        // A reference picture belongs to the picture: on every frame, saved once.
+        let reference = crate::reference::Reference::from_bytes(
+            "ref.png",
+            crate::reference::tests::two_colour_png(),
+        )
+        .unwrap();
+        let _ = crate::reference::ReferenceCommand::add(&mut document, reference);
+        for frame in 0..3 {
+            history.go_to_frame(&mut document, frame);
+            assert_eq!(document.references().len(), 1);
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        crate::file::write_document(&document, &mut bytes).unwrap();
+        bytes.set_position(0);
+        assert_eq!(
+            crate::file::read_document(bytes)
+                .unwrap()
+                .references()
+                .len(),
+            1
+        );
+    }
+
     /// The memory the brief worries about: 24 frames of 1024 x 1024 with
     /// several layers must not be 24 full copies.
     #[test]
