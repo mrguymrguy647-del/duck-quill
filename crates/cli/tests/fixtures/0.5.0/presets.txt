@@ -1,0 +1,30 @@
+--- stdout
+The built-in brush presets. In a script:
+  {"cmd": "brush", "preset": "Pencil (graphite)", "color": "#2A2A30"}
+(the colour stays as it was unless given; other fields change the preset)
+
+Pencil (graphite)
+  A soft graphite pencil: light pressure gives faint grey that catches the paper grain, pressing harder fills it in. Going over it again darkens it only so far.
+  {"size":5.0,"opacity":0.85,"flow":1.0,"hardness":0.1,"spacing":0.1,"pressure_size":true,"pressure_opacity":true,"pressure_flow":false,"tip":"round","pressure_size_min":0.85,"pressure_opacity_min":0.15,"pressure_curve":1.4,"grain":0.75,"grain_scale":1.0,"build_up":0.8}
+
+Ink pen
+  Solid ink: always fully opaque, pressure only changes how thick the line is. Smoothing keeps long lines clean.
+  {"size":6.0,"opacity":1.0,"flow":1.0,"hardness":1.0,"spacing":0.05,"pressure_size":true,"pressure_opacity":false,"pressure_flow":false,"tip":"round","pressure_size_min":0.15}
+
+Marker
+  A felt marker: even, a little see-through, the same width however hard you press. Overlapping strokes darken.
+  {"size":24.0,"opacity":0.7,"flow":1.0,"hardness":0.95,"spacing":0.05,"pressure_size":false,"pressure_opacity":false,"pressure_flow":false,"tip":"round"}
+
+Soft airbrush
+  A big soft spray that builds up slowly where you linger or go over it. For shading and glows.
+  {"size":120.0,"opacity":1.0,"flow":0.08,"hardness":0.0,"spacing":0.05,"pressure_size":false,"pressure_opacity":false,"pressure_flow":true,"tip":"round"}
+
+Chalk
+  Broken, grainy chalk that varies a little dab to dab. Good for texture and rough fills.
+  {"size":30.0,"opacity":0.9,"flow":1.0,"hardness":0.6,"spacing":0.1,"pressure_size":true,"pressure_opacity":true,"pressure_flow":false,"tip":"chalk","dynamics":{"follow":true,"size":0.15,"angle":40.0,"opacity":0.2},"pressure_size_min":0.5,"pressure_opacity_min":0.3}
+
+Soft eraser (an eraser: paint with `erase`)
+  A big soft eraser for lifting pencil and fading edges; pressing harder makes it bigger.
+  {"size":60.0,"opacity":1.0,"flow":1.0,"hardness":0.0,"spacing":0.05,"pressure_size":true,"pressure_opacity":false,"pressure_flow":false,"tip":"round","pressure_size_min":0.3}
+--- stderr
+--- exit code 0

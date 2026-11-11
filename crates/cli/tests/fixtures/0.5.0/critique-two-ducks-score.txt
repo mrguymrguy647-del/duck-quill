@@ -1,0 +1,15 @@
+--- stdout
+critique: examples/two-ducks.json (painted in<time>)
+  canvas 640 x 360; no intent block (write one: it's what the picture is judged against)
+  values: mostly mid-greys (82% in bins 4-6): the picture looks flat; push the darks down and the lights up
+  focal point: the eye goes to x 410, y 62 (no focal point in the intent to compare)
+  colour: 1 hue carries 90% of the colour; warm 3%, cool 97%, neutral 0%
+  out of key: not judged (no coloured key colours in the intent)
+  texture: duck is flat over 36% of it (no change in value); a gradient, a noise fill or a few marks would give it life
+  structure: layer "Water" has no light and dark side (squint range 0.00): a smudge; give it a lit side and a shadow side
+  readability at 96 px: 2 of 2 parts still read
+  composition: visual weight sits at 50% across, 47% down
+  Numbers can't judge beauty: look at the views, run the blind-read test, and ask for a rating.
+  benchmark scores from the numbers (skills/duck-quill/exercises/benchmark.md; overall appeal is not a number's to give): readability 5, values 1, colour 3, focal point 2, detail 2
+--- stderr
+--- exit code 0

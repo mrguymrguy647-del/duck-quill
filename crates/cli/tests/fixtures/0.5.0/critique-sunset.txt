@@ -1,0 +1,12 @@
+--- stdout
+critique: examples/sunset.json (painted in<time>)
+  canvas 1600 x 1000; no intent block (write one: it's what the picture is judged against)
+  values: 4 value groups when squinted (black 29%, dark 39%, mid 19%, light 10%); dark 54%, mid 37%, light 8%
+  focal point: the eye goes to x 775, y 859 (no focal point in the intent to compare)
+  colour: 9 hues carry 90% of the colour; warm 45%, cool 23%, neutral 32%
+  out of key: not judged (no coloured key colours in the intent)
+  structure: layer "Headland" has no light and dark side (squint range 0.04): a smudge; give it a lit side and a shadow side
+  composition: visual weight sits at 50% across, 57% down
+  Numbers can't judge beauty: look at the views, run the blind-read test, and ask for a rating.
+--- stderr
+--- exit code 0

@@ -1,0 +1,14 @@
+--- stdout
+OK: examples/duck-walk.json (painted in<time>)
+  canvas 512 x 128, 10 commands
+  layers, bottom to top:
+    Shadow: x 36..476, y 109..117 (command 5)
+    Duck: x 20..498, y 23..115 (commands 7-10)
+  named groups and uses (outermost):
+    command 7 (group "frame 1: contact"): x 20..114, y 26..115 (3 inside)
+    command 8 (group "frame 2: passing"): x 148..242, y 23..115 (3 inside)
+    command 9 (group "frame 3: contact"): x 276..370, y 26..115 (3 inside)
+    command 10 (group "frame 4: passing"): x 404..498, y 23..115 (3 inside)
+    (--detail lists the 12 inside these too)
+--- stderr
+--- exit code 0

@@ -1,0 +1,9 @@
+Layer 1 | visible true | opacity 1 | normal | clip false | lock false | tiles 1 | area Some((0, 368, 90, 400))
+Fills | visible true | opacity 1 | normal | clip false | lock false | tiles 6 | area Some((0, 0, 600, 400))
+Sky | visible true | opacity 1 | normal | clip false | lock false | tiles 6 | area Some((0, 0, 600, 300))
+Hidden | visible false | opacity 1 | normal | clip false | lock false | tiles 4 | area Some((200, 100, 400, 300))
+Bits | visible true | opacity 1 | screen | clip false | lock false | tiles 3 | area Some((61, 118, 569, 390))
+Texture | visible true | opacity 0.7 | multiply | clip false | lock false | tiles 3 | area Some((221, 260, 572, 390))
+Shapes | visible true | opacity 1 | normal | clip false | lock false | tiles 6 | area Some((13, 16, 564, 380))
+Hand stroke | visible true | opacity 0.8 | normal | clip true | lock true | tiles 7 | area Some((-125, -65, 793, 454))
+references 1

@@ -1,0 +1,11 @@
+--- stdout
+Exported examples/duck-pixel.json: idle (4 frames, 4 fps), walk (6 frames, 10 fps)
+  frame 64 x 64 (2 times bigger, sharp pixels), pivot (32, 60)
+  <out>/duck-pixel.png and <out>/duck-pixel.json (sheet 384 x 128, 2 animations, 10 frames)
+  10 frames as duck-pixel-<animation>-<frame>.png
+  <out>/duck-pixel-idle.gif
+  <out>/duck-pixel-walk.gif
+  animation "idle": 1 of 1 layers painted once, 0 of 4 commands skipped in later frames
+  animation "walk": 1 of 1 layers painted once, 0 of 4 commands skipped in later frames
+--- stderr
+--- exit code 0

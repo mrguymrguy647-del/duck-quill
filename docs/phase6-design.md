@@ -388,3 +388,17 @@ needed only on GitHub's build machine.
 
 **Did testing 0.5.0 on Windows turn up anything?** Pen, shortcuts, lasso, copy and paste,
 crash recovery, anything annoying or slow. Whatever you list joins Step 1.
+
+## The owner's answers (design review)
+
+Approved as written, with the four changes to the brief, and three additions:
+
+1. **Painting speed is measured before and after tiles are shared**: a long brush stroke on
+   a large canvas and the existing timing test and gallery renders. It must not get slower.
+   The numbers go in the Step 3 report (the "before" is in `docs/phase6-notes.md`).
+2. **"The old program files are put back if the setup fails halfway" is built and proven in
+   Step 5**, not assumed of Inno Setup.
+3. **The updater ignores pre-releases and drafts, and never installs a version older than or
+   equal to the one running.**
+
+Testing 0.5.0 on Windows: no answer yet. Anything reported later joins Step 1.

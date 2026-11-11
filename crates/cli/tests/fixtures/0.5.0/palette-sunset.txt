@@ -1,0 +1,7 @@
+--- stdout
+palette of examples/sunset.json (8 colours, biggest share first):
+  "palette": { "c1": "#3A2647", "c2": "#834A5B", "c3": "#C87052", "c4": "#EB965B", "c5": "#AD6A6B", "c6": "#F8BF75", "c7": "#FDDEA3", "c8": "#DC956F" }
+  shares: c1 49%, c2 22%, c3 8%, c4 6%, c5 6%, c6 4%, c7 3%, c8 2%
+  saved <out>/sunset-palette.png
+--- stderr
+--- exit code 0

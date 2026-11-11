@@ -1,0 +1,14 @@
+--- stdout
+OK: crates/engine/tests/scripts/all-commands.json (painted in<time>)
+  canvas 600 x 400, 44 commands
+  snapshots: middle
+  layers, bottom to top:
+    Layer 1: x 0..90, y 368..400 (command 3)
+    Fills: x 0..600, y 0..400 (commands 29, 30)
+    Sky: x 0..600, y 0..300 (commands 5, 6)
+    Hidden (hidden): x 200..400, y 100..300 (command 39)
+    Bits: x 61..569, y 118..390 (commands 25, 26)
+    Texture: x 221..572, y 260..390 (commands 22, 23)
+    Shapes: x 13..564, y 16..380 (commands 8-14, 16-20, 44)
+--- stderr
+--- exit code 0

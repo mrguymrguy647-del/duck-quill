@@ -1,0 +1,13 @@
+--- stdout
+OK: examples/two-ducks.json (painted in<time>)
+  canvas 640 x 360, 10 commands
+  layers, bottom to top:
+    Sky: x 0..640, y 0..360 (command 3)
+    Water: x 0..640, y 220..360 (command 5)
+    Ducks: x 164..476, y 187..264 (commands 7, 8)
+    Words: x 196..444, y 32..75 (command 10)
+  named groups and uses:
+    command 7 (use "duck"): x 164..256, y 187..254
+    command 8 (use "duck"): x 384..476, y 197..264
+--- stderr
+--- exit code 0

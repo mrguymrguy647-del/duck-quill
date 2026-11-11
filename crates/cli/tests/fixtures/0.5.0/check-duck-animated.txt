@@ -1,0 +1,17 @@
+--- stdout
+OK: examples/duck-animated.json (painted in<time>)
+  canvas 128 x 128, 5 commands
+  animations (every frame painted without mistakes): idle (4 frames, 6 fps, loops); walk (8 frames, 12 fps, loops)
+  (the layers and parts below are frame 0 of "idle"; --animation and --frame show another)
+  motion in "idle" (4 frames, loops):
+    command 1 (use "duck"): middle (67, 76) in frame 0 to (67, 78) in frame 3; biggest step 2 px (frame 0 to 1)
+  motion in "walk" (8 frames, loops):
+    command 1 (use "duck"): middle (67, 76) in frame 0 to (67, 76) in frame 7; biggest step 1 px (frame 1 to 2)
+  layers, bottom to top:
+    Shadow: x 36..92, y 112..120 (animation command 1)
+    Duck: x 20..114, y 30..122 (animation command 1)
+  named groups and uses (outermost):
+    animation "idle" > command 1 (use "duck"): x 20..114, y 30..122 (8 inside)
+    (--detail lists the 8 inside these too)
+--- stderr
+--- exit code 0

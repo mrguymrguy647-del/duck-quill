@@ -1,0 +1,6 @@
+--- stdout
+--- stderr
+error: unknown command "paint-it-black"
+
+Run `quill help` to see how to use it.
+--- exit code 2

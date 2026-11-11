@@ -1,0 +1,8 @@
+--- stdout
+Exported examples/duck-animated.json: idle (4 frames, 6 fps), walk (8 frames, 12 fps)
+  frame 128 x 128, pivot (64, 116)
+  <out>/duck-animated.png and <out>/duck-animated.json (sheet 1024 x 256, 2 animations, 12 frames)
+  animation "idle": 0 of 2 layers painted once, 0 of 5 commands skipped in later frames
+  animation "walk": 0 of 2 layers painted once, 0 of 5 commands skipped in later frames
+--- stderr
+--- exit code 0

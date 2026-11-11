@@ -1,0 +1,22 @@
+--- stdout
+OK: examples/sunset-pond-simple.json (painted in<time>)
+  canvas 1920 x 1080, 20 commands
+  intent:
+    subject: a duck on a pond at sunset
+    focal point: "duck"
+    light: from the top right (315 degrees)
+    mood: calm, warm
+    key colours: sky_low, sun, water_dark
+    focal point on the canvas: (1019, 858)
+  layers, bottom to top:
+    Sky: x 0..1920, y 0..1080 (command 4)
+    Sun: x 1210..1390, y 410..590 (command 6)
+    Hills: x 0..1920, y 560..960 (commands 8-10)
+    Water: x 0..1920, y 700..1080 (commands 12, 13)
+    Pads: x 410..770, y 940..1050 (commands 15, 16)
+    Reeds: x 157..373, y 759..1013 (command 18)
+    Duck: x 938..1100, y 794..922 (command 20)
+  named groups and uses (outermost):
+    command 20 (use "duck"): x 938..1100, y 794..922
+--- stderr
+--- exit code 0

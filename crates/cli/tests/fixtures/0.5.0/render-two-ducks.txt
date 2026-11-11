@@ -1,0 +1,9 @@
+--- stdout
+Rendered examples/two-ducks.json in<time>
+  canvas 640 x 360, 10 commands
+  layers, bottom to top:
+    Sky: x 0..640, y 0..360 | Water: x 0..640, y 220..360 | Ducks: x 164..476, y 187..264
+    Words: x 196..444, y 32..75
+  saved: <out>/two-ducks.png, <out>/two-ducks.quill
+--- stderr
+--- exit code 0

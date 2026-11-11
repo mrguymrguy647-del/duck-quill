@@ -1,0 +1,8 @@
+--- stdout
+OK: examples/two-ducks.json (painted in<time>)
+  saved <out>/two-ducks-views.png
+  the eye goes to cell (20, 5) of 32 x 32, around (410, 62); the intent names no focal point
+  silhouettes (outermost parts, in their colours): duck (x2)
+  the heat map is a model of attention, not the truth: look at the views
+--- stderr
+--- exit code 0

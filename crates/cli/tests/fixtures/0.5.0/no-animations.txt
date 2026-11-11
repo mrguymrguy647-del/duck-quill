@@ -1,0 +1,4 @@
+--- stdout
+--- stderr
+error: this script has no animations: `export` is for scripts with an "animations" section (use `render` for a picture)
+--- exit code 1

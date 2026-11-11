@@ -1,0 +1,21 @@
+--- stdout
+OK: examples/night-hills.json (painted in<time>, 1 warning)
+  canvas 1600 x 1000, 40 commands
+  snapshots: sky, hills blocked in, finished
+  layers, bottom to top:
+    Sky: x 0..1600, y 0..1000 (command 3)
+    Stars: x 0..1581, y 0..560 (commands 5, 6)
+    Moon glow: x 780..1579, y 0..630 (command 8)
+    Moon: x 1110..1250, y 160..300 (command 10)
+    Far hills: x 0..1600, y 466..1000 (command 13)
+    Middle hills: x 0..1600, y 609..1000 (command 15)
+    Mist: x 0..1600, y 600..760 (command 17)
+    Near hill: x 0..1600, y 758..1000 (command 19)
+    Trees: x 269..547, y 504..800 (commands 22-27)
+    Rim light: x 370..1400, y 509..802 (commands 30-32)
+    Shadows: x 0..703, y 785..1000 (commands 35, 36)
+    Grass: x 0..1599, y 789..1000 (commands 38, 39)
+  warnings:
+    palette colour "moon_glow" is never used
+--- stderr
+--- exit code 0

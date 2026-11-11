@@ -1,0 +1,55 @@
+--- stdout
+quill render
+
+USAGE
+  quill render <script.json> [options]     paint the script, save the picture
+
+RENDER OPTIONS
+  --out <folder>     where to save (default: out)
+  --snapshots        also save a picture at every `snapshot` command and
+                     whenever the script moves on from a layer it painted
+  --sheet            save one image with all those pictures side by side
+  --preview          paint smaller, for a quick look (longest side 800 px)
+  --scale <s>        paint at this size, e.g. 0.5 for half (instead of --preview)
+  --crop x,y,w,h     save only this part, at full size, to check details
+                     (it may go past the edges: outside shows as grey squares)
+  --zoom <n>         also save <name>-zoom<n>.png, n times bigger (pixels
+                     become squares); <name>.png stays its own size. Crops,
+                     previews and sheets are shown enlarged
+  --transparent      leave the paper out of the PNG (see-through background)
+  --layers "A,B"     show only these layers (the .quill keeps them all)
+  --hide "A,B"       show all layers but these
+  --bg <#RRGGBB>     with --transparent: this colour behind the see-through
+                     parts of previews, crops, snapshots and sheets
+  --grid <n>         a light grid every n canvas pixels, with coordinates,
+                     on previews, crops and snapshots
+  --detail           after rendering, list everything `check --detail` does
+                     instead of the short summary
+  --frame <n>        for a script with animations: paint frame n (from 0)
+  --frames <a>-<b>   paint frames a to b; --all-frames paints every frame
+  --animation <name> which animation, if the script has more than one
+                     (frames are saved as <name>-<animation>-<frame>.png)
+  --frame-sheet [n]  every frame (or every nth) in one picture, numbered,
+                     as <name>-<animation>-frames.png
+  --onion            with --frame n: the frame with the one before it faint
+                     in red and the one after in blue, as ...-onion.png
+  --pixels           for a pixel canvas: print the picture as rows of
+                     letters, one per palette colour (. = see-through)
+  --gif              every frame as <name>-<animation>.gif, for a quick look
+  --tile             for a picture that repeats (a game background, a floor
+                     tile): also <name>-tile.png, the picture 2 x 2, and a
+                     warning where opposite edges don't meet
+
+  Pictures for looking at (previews, crops, snapshots, sheets) get --bg and
+  --grid; <name>.png and <name>.quill never do. At full size, the picture
+  with them is saved as <name>-view.png.
+
+EXAMPLES
+  quill render examples/sunset.json --preview --sheet
+  quill render examples/sunset.json --out render --snapshots
+  quill render examples/sunset.json --crop 700,450,200,150 --zoom 3 --grid 50
+  quill render examples/sunset.json --preview --layers "Sky,Sun"
+
+Run `quill help` for every command.
+--- stderr
+--- exit code 0

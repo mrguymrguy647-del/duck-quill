@@ -1,0 +1,11 @@
+--- stdout
+Rendered examples/duck-pixel.json in<time>
+  canvas 32 x 32, 4 commands
+  animation "idle": 1 of 4 frames painted (0); the summary below is frame 0
+  layers, bottom to top:
+    Layer 1: x 4..29, y 8..31
+  saved: <out>/duck-pixel-idle-000.png, <out>/duck-pixel-idle-000-tile.png
+  tile: opposite edges meet, so it repeats without a seam
+  (this script has animations: frame 0 was painted (--frame N, --frames A-B or --all-frames choose frames; --animation chooses which animation))
+--- stderr
+--- exit code 0

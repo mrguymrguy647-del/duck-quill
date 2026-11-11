@@ -1,0 +1,16 @@
+--- stdout
+examples/sunset.json
+  canvas 1600 x 1000, paper #000000
+  10 layer(s), bottom to top:
+    1. Sky  [visible, opacity 100%, normal]  painted x 0..1600, y 0..1000, by command 3
+    2. Glow  [visible, opacity 100%, screen]  painted x 280..1319, y 81..1000, by command 5
+    3. Sun  [visible, opacity 100%, normal]  painted x 708..892, y 498..682, by command 7
+    4. Clouds  [visible, opacity 100%, normal]  painted x 0..1600, y 51..486, by commands 11-19
+    5. Headland  [visible, opacity 100%, normal]  painted x 0..1600, y 537..627, by commands 22, 23
+    6. Sea  [visible, opacity 100%, normal]  painted x 0..1600, y 620..1000, by command 25
+    7. Reflection  [visible, opacity 100%, screen]  painted x 585..1014, y 616..1000, by commands 28-30
+    8. Waves  [visible, opacity 100%, normal]  painted x 0..1600, y 619..1000, by commands 32-36
+    9. Birds  [visible, opacity 100%, normal]  painted x 1009..1197, y 231..301, by commands 40-45
+   10. Vignette (selected)  [visible, opacity 100%, multiply]  painted x 0..1600, y 0..1000, by command 47
+--- stderr
+--- exit code 0

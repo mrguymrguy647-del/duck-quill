@@ -1,0 +1,17 @@
+--- stdout
+OK: examples/sunset.json (painted in<time>)
+  canvas 1600 x 1000, 48 commands
+  snapshots: sky and sun, blocked in, sea details, finished
+  layers, bottom to top:
+    Sky: x 0..1600, y 0..1000 (command 3)
+    Glow: x 280..1319, y 81..1000 (command 5)
+    Sun: x 708..892, y 498..682 (command 7)
+    Clouds: x 0..1600, y 51..486 (commands 11-19)
+    Headland: x 0..1600, y 537..627 (commands 22, 23)
+    Sea: x 0..1600, y 620..1000 (command 25)
+    Reflection: x 585..1014, y 616..1000 (commands 28-30)
+    Waves: x 0..1600, y 619..1000 (commands 32-36)
+    Birds: x 1009..1197, y 231..301 (commands 40-45)
+    Vignette: x 0..1600, y 0..1000 (command 47)
+--- stderr
+--- exit code 0

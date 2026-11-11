@@ -1,0 +1,6 @@
+--- stdout
+Packed 2 tiles into 547 x 130 (different sizes: in rows).
+  saved: <out>/set.png, <out>/set.json
+  (duck-pixel has animations: its first frame is used (`quill export` makes a sprite sheet of all its frames))
+--- stderr
+--- exit code 0

@@ -1,0 +1,4 @@
+--- stdout
+"Duck Quill" at size 32: 154 x 39 px (1 line, each 38.7 px high)
+--- stderr
+--- exit code 0

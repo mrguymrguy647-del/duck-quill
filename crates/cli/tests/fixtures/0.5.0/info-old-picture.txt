@@ -1,0 +1,10 @@
+--- stdout
+crates/engine/tests/fixtures/old-picture.artapp
+  canvas 300 x 200, paper #8EC5E8
+  4 layer(s), bottom to top:
+    1. Ground  [visible, opacity 100%, normal]  painted x 0..300, y 130..200
+    2. Shade  [visible, opacity 60%, multiply, clip]  painted x 0..300, y 130..200
+    3. Sun  [visible, opacity 100%, screen]  painted x 190..250, y 30..90
+    4. Lines (selected)  [visible, opacity 100%, normal, lock]  painted x 17..143, y 87..123
+--- stderr
+--- exit code 0

@@ -1,0 +1,12 @@
+{
+  "image": "duck-pixel.png",
+  "frame": { "width": 64, "height": 64 },
+  "columns": 6,
+  "rows": 2,
+  "scale": 2,
+  "pivot": [32.0,60.0],
+  "animations": {
+    "idle": {"row":0,"frames":[0,1,2,3],"fps":4.0,"loop":true},
+    "walk": {"row":1,"frames":[6,7,8,9,10,11],"fps":10.0,"loop":true}
+  }
+}

@@ -1,0 +1,14 @@
+--- stdout
+OK: examples/duck-sheet.json (painted in<time>)
+  canvas 768 x 432, 24 commands
+  layers, bottom to top:
+    Panels: x 16..752, y 88..324 (command 6)
+    Ducks: x 52..710, y 128..288 (commands 8-10)
+    Labels: x 17..720, y 31..415 (commands 12-24)
+  named groups and uses (outermost):
+    command 8 (use "duck"): x 52..220, y 128..289 (3 inside)
+    command 9 (use "duck"): x 300..468, y 128..289 (3 inside)
+    command 10 (use "duck"): x 542..710, y 128..289 (3 inside)
+    (--detail lists the 9 inside these too)
+--- stderr
+--- exit code 0

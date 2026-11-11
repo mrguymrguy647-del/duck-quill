@@ -1,0 +1,14 @@
+--- stdout
+crates/engine/tests/fixtures/picture-<version>.quill
+  canvas 600 x 400, paper #FAF6EE
+  8 layer(s), bottom to top:
+    1. Layer 1  [visible, opacity 100%, normal]  painted x 0..90, y 368..400
+    2. Fills  [visible, opacity 100%, normal]  painted x 0..600, y 0..400
+    3. Sky  [visible, opacity 100%, normal]  painted x 0..600, y 0..300
+    4. Hidden  [hidden, opacity 100%, normal]  painted x 200..400, y 100..300
+    5. Bits  [visible, opacity 100%, screen]  painted x 61..569, y 118..390
+    6. Texture  [visible, opacity 70%, multiply]  painted x 221..572, y 260..390
+    7. Shapes  [visible, opacity 100%, normal]  painted x 13..564, y 16..380
+    8. Hand stroke (selected)  [visible, opacity 80%, normal, clip, lock]  painted x -125..793, y -65..454
+--- stderr
+--- exit code 0

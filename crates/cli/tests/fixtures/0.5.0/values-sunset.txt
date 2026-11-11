@@ -1,0 +1,6 @@
+--- stdout
+values of examples/sunset.json: black 32%, dark 36%, mid 18%, light 10%, white 4%
+  4 value groups when squinted (black 29%, dark 39%, mid 19%, light 10%)
+  saved <out>/sunset-values.png
+--- stderr
+--- exit code 0
