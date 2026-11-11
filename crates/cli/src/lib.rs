@@ -1424,32 +1424,46 @@ fn command_list(numbers: &[usize]) -> String {
 }
 
 /// A pixel canvas as rows of letters, one letter per palette colour (a
-/// legend first), `.` for see-through and `?` for anything else.
+/// legend first), `.` for see-through and `?` for anything else. A
+/// palette of more than 62 colours gets two characters per colour
+/// (`aa`, `ab`, ...), which `pixels` rows can be written with too.
 fn pixel_rows(document: &Document, palette: &BTreeMap<String, String>) -> Vec<String> {
     let letters: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
-    let mut legend: Vec<(char, [u8; 3], String)> = Vec::new();
+    let wide = palette.len() > letters.len();
+    let code = |i: usize| -> Option<String> {
+        if !wide {
+            letters.get(i).map(|letter| letter.to_string())
+        } else {
+            let first = letters.get(i / letters.len())?;
+            Some(format!("{first}{}", letters[i % letters.len()]))
+        }
+    };
+    let mut legend: Vec<(String, [u8; 3], String)> = Vec::new();
     for (i, (name, hex)) in palette.iter().enumerate() {
         if let Ok([r, g, b, _]) = quill_engine::script::parse_hex(hex)
-            && let Some(&letter) = letters.get(i)
+            && let Some(code) = code(i)
         {
-            legend.push((letter, [r, g, b], format!("{letter} = {name} {hex}")));
+            let text = format!("{code} = {name} {hex}");
+            legend.push((code, [r, g, b], text));
         }
     }
+    let (empty, unknown) = if wide { ("..", "??") } else { (".", "?") };
     let mut rows: Vec<String> = legend.iter().map(|(_, _, text)| text.clone()).collect();
     for y in 0..document.height() as i32 {
-        let mut row = String::with_capacity(document.width() as usize);
+        let mut row = String::with_capacity(document.width() as usize * empty.len());
         for x in 0..document.width() as i32 {
             let pixel = document.composite_pixel(x, y, Background::Transparent);
-            let letter = if pixel.a == 0 {
-                '.'
+            if pixel.a == 0 {
+                row.push_str(empty);
             } else {
                 let color = quill_engine::image::unpremultiply(pixel);
-                legend
-                    .iter()
-                    .find(|(_, rgb, _)| *rgb == [color[0], color[1], color[2]])
-                    .map_or('?', |(letter, _, _)| *letter)
-            };
-            row.push(letter);
+                row.push_str(
+                    legend
+                        .iter()
+                        .find(|(_, rgb, _)| *rgb == [color[0], color[1], color[2]])
+                        .map_or(unknown, |(code, _, _)| code.as_str()),
+                );
+            }
         }
         rows.push(row);
     }

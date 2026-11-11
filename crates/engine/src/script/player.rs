@@ -3887,39 +3887,65 @@ impl Player {
         if command.rows.is_empty() {
             return Err("`rows` needs at least one row of characters".into());
         }
-        let mut colors: HashMap<char, Rgba> = HashMap::new();
+        // Every key has the same number of characters (one, in scripts
+        // written before 0.6.0), and each row is read that many at a time.
+        let key_length = command
+            .colors
+            .keys()
+            .next()
+            .map_or(1, |key| key.chars().count());
+        let mut colors: HashMap<Vec<char>, Rgba> = HashMap::new();
         for (key, color) in &command.colors {
-            let mut chars = key.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) if c != '.' => {
-                    colors.insert(c, self.color(color)?);
-                }
-                _ => {
-                    return Err(format!(
-                        "`colors` keys are single characters (not \".\"), like \"y\": not \"{key}\""
-                    ));
-                }
+            let chars: Vec<char> = key.chars().collect();
+            if chars.is_empty() || chars.iter().all(|c| *c == '.' || *c == ' ') {
+                return Err(format!(
+                    "`colors` keys are one or more characters, like \"y\" or \"y1\" (\".\" and \
+                     spaces are see-through): not \"{key}\""
+                ));
             }
+            if chars.len() != key_length {
+                return Err(format!(
+                    "`colors` keys must all have the same number of characters, so the rows can \
+                     be read: \"{key}\" has {}, others have {key_length}",
+                    chars.len()
+                ));
+            }
+            colors.insert(chars, self.color(color)?);
         }
         let layer = document.active_id();
         let opacity = self.frame().opacity;
         for (row, text) in command.rows.iter().enumerate() {
             let chars: Vec<char> = text.chars().collect();
+            if chars.len() % key_length != 0 {
+                return Err(format!(
+                    "row {} has {} characters, but each pixel is {key_length} characters here \
+                     (the `colors` keys' length): {} too many or {} too few",
+                    row + 1,
+                    chars.len(),
+                    chars.len() % key_length,
+                    key_length - chars.len() % key_length
+                ));
+            }
+            let cells: Vec<&[char]> = chars.chunks(key_length).collect();
             let mut column = 0;
-            while column < chars.len() {
-                let c = chars[column];
-                if c == '.' || c == ' ' {
+            while column < cells.len() {
+                let cell = cells[column];
+                if cell.iter().all(|c| *c == '.' || *c == ' ') {
                     column += 1;
                     continue;
                 }
-                let Some(&color) = colors.get(&c) else {
+                let Some(&color) = colors.get(cell) else {
+                    let written: String = cell.iter().collect();
                     return Err(format!(
-                        "row {} has \"{c}\", which isn't in `colors` (\".\" is see-through)",
-                        row + 1
+                        "row {} has \"{written}\" at column {}, which isn't in `colors` (\"{}\" is \
+                         see-through)",
+                        row + 1,
+                        column + 1,
+                        ".".repeat(key_length)
                     ));
                 };
                 let start = column;
-                while column < chars.len() && chars[column] == c {
+                while column < cells.len() && cells[column] == cell {
                     column += 1;
                 }
                 let (x0, y0) = (left + start as f32, top + row as f32);
@@ -7155,6 +7181,54 @@ mod tests {
             r##"{ "cmd": "pixels", "at": [0, 0], "colors": { "r": "red" }, "rows": ["rx"] }"##,
         ));
         assert!(problem.contains("row 1 has \"x\""), "{problem}");
+    }
+
+    #[test]
+    fn pixel_rows_take_keys_of_two_or_more_characters() {
+        // More than 52 colours need more than one letter each.
+        let two = play(&pixel_script(
+            "true",
+            r##"{ "cmd": "pixels", "at": [2, 3], "colors": { "r1": "red", "k1": "ink" }, "rows": [
+                "..r1r1..", "r1k1k1r1", "        ", "r1....r1" ] }"##,
+        ));
+        let one = play(&pixel_script(
+            "true",
+            r##"{ "cmd": "pixels", "at": [2, 3], "colors": { "r": "red", "k": "ink" }, "rows": [
+                ".rr.", "rkkr", "    ", "r..r" ] }"##,
+        ));
+        assert_eq!(pixel_grid(&two), pixel_grid(&one), "the same picture");
+        let painted: usize = pixel_grid(&two)
+            .iter()
+            .flatten()
+            .filter(|p| p[3] == 255)
+            .count();
+        assert_eq!(painted, 8);
+    }
+
+    #[test]
+    fn a_bad_pixel_row_names_its_row_and_column() {
+        let problem = |colors: &str, rows: &str| {
+            error(&pixel_script(
+                "true",
+                &format!(
+                    r##"{{ "cmd": "pixels", "at": [0, 0], "colors": {colors}, "rows": {rows} }}"##
+                ),
+            ))
+        };
+        let unknown = problem(r#"{ "r": "red" }"#, r#"["rr", "r.xr"]"#);
+        assert!(unknown.contains("row 2 has \"x\" at column 3"), "{unknown}");
+        let unknown = problem(r#"{ "r1": "red", "k1": "ink" }"#, r#"["r1k1", "r1..zzk1"]"#);
+        assert!(
+            unknown.contains("row 2 has \"zz\" at column 3"),
+            "{unknown}"
+        );
+        assert!(unknown.contains("\"..\" is see-through"), "{unknown}");
+        let odd = problem(r#"{ "r1": "red" }"#, r#"["r1r1", "r1r"]"#);
+        assert!(odd.contains("row 2 has 3 characters"), "{odd}");
+        let mixed = problem(r#"{ "r": "red", "k1": "ink" }"#, r#"["r"]"#);
+        assert!(mixed.contains("same number of characters"), "{mixed}");
+        let dots = problem(r#"{ "..": "red" }"#, r#"[".."]"#);
+        assert!(dots.contains("not \"..\""), "{dots}");
     }
 
     #[test]

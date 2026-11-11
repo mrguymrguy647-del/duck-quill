@@ -142,7 +142,7 @@ writing more. Then fix the script and render again. Small steps beat one huge sc
 | keyframes | Any number of a `group` or `use` as `{"keys": [[0, 0], [4, 20]], "ease": "in-out", "shift": 4}`; a key's time can be `"1.5s"`. A `seed` with keys holds until the next key. |
 | `params` / `with` / `"$name"` | A symbol's parameters with defaults; a `use` sets them (keyframes allowed); `"upright": true` keeps a foot flat. |
 | `"pixel"` on `canvas` | Pixel art: painted bigger, shrunk to whole pixels in the palette's colours; `{"supersample": 8, "outline": "ink"}`. |
-| `pixels` | Rows of characters, one canvas pixel each: `"rows": ["..kk.."]`, `"colors": {"k": "ink"}`. |
+| `pixels` | Rows of characters, one canvas pixel each: `"rows": ["..kk.."]`, `"colors": {"k": "ink"}`. Over 52 colours: two-character keys (`"k1"`, `".."` see-through). |
 
 Areas: `{"rect": [x, y, w, h]}`, `{"ellipse": [cx, cy, rx, ry]}`, `{"circle": [cx, cy, r]}`,
 `{"polygon": [[x, y], ...]}`.

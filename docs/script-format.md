@@ -955,7 +955,11 @@ layer, after shrinking. Positions are in canvas pixels, decimals allowed (`"radi
 ```
 
 Paints each character as one canvas pixel, the top-left one at `at`: `.` (or a space) is
-see-through, every other character is a palette colour from `colors` (keys are single characters).
+see-through, every other character is a palette colour from `colors`. For more colours than
+there are letters, give every key two (or more) characters, all the same length; each pixel is
+then that many characters, and `..` is see-through:
+`"colors": { "g1": "grass", "g2": "grass_dark" }, "rows": ["g1g2..g1"]`. A row with a mistake is
+reported by its row and column. `quill render --pixels` prints a pixel canvas back in this form.
 It works on any canvas (on a big one the "pixels" are canvas pixels too). Single pixels, lines,
 rectangles, circles and the paint bucket need nothing new: `rect`, `line`, `ellipse`, `polygon`
 and `fill` already come out crisp on a pixel canvas.

@@ -1562,3 +1562,56 @@ fn atlas_packs_tiles_into_one_png_with_their_places() {
     assert_eq!(again.status.code(), Some(1));
     std::fs::remove_dir_all(out).ok();
 }
+
+/// Phase 6, fix 6: more than 52 colours in pixel art. `pixels` rows take
+/// two-character keys, and `--pixels` prints two characters per colour
+/// when the palette is too big for one, in a form `pixels` reads back.
+#[test]
+fn seventy_colours_fit_in_pixels_rows_and_print_back_with_two_letter_codes() {
+    let out = folder("seventy-colours");
+    std::fs::create_dir_all(&out).unwrap();
+    // 70 colours named c00..c69, all used, one pixel each on a 10 x 7 canvas.
+    let palette: Vec<String> = (0..70)
+        .map(|i| format!("\"c{i:02}\": \"#{:02X}{:02X}40\"", 10 + i * 3, 250 - i * 3))
+        .collect();
+    let colors: Vec<String> = (0..70)
+        .map(|i| format!("\"{i:02}\": \"c{i:02}\""))
+        .collect();
+    let rows: Vec<String> = (0..7)
+        .map(|y| {
+            let row: String = (0..10).map(|x| format!("{:02}", y * 10 + x)).collect();
+            format!("\"{row}\"")
+        })
+        .collect();
+    let script = out.join("seventy.json");
+    std::fs::write(
+        &script,
+        format!(
+            r##"{{ "palette": {{ {} }}, "commands": [
+              {{ "cmd": "canvas", "width": 10, "height": 7, "pixel": true }},
+              {{ "cmd": "pixels", "at": [0, 0], "colors": {{ {} }}, "rows": [ {} ] }} ] }}"##,
+            palette.join(", "),
+            colors.join(", "),
+            rows.join(", ")
+        ),
+    )
+    .unwrap();
+    let output = quill()
+        .args(["render", script.to_str().unwrap(), "--pixels", "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("never used"), "{text}");
+    assert!(text.contains("aa = c00 #0AFA40"), "{text}");
+    assert!(text.contains("bh = c69 #D92B40"), "{text}");
+    // The first row: colours 0 to 9 as aa ab ... aj; nothing unknown.
+    assert!(text.contains("\n    aaabacadaeafagahaiaj\n"), "{text}");
+    assert!(!text.contains('?'), "{text}");
+    let _ = std::fs::remove_dir_all(out);
+}
