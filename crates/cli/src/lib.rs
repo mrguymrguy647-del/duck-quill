@@ -28,6 +28,7 @@ mod export;
 mod font;
 mod gallery;
 mod grid;
+mod picture;
 mod regions;
 mod sheet;
 mod study;
@@ -70,6 +71,22 @@ USAGE
                                            with its JSON, frames, a GIF or an MP4;
                                            a script without animations as still
                                            tiles, one per symbol, with a JSON
+  quill check|render|export|critique <picture.quill>
+                                           the same for a picture made in the app,
+                                           such as a hand-drawn animation: every
+                                           frame's box and motion, frames as PNGs
+                                           (--frame n, --all-frames, --frame-sheet,
+                                           --onion), the sprite sheet + JSON
+                                           (--sheet, --gif, --mp4, --frames-png,
+                                           --scale), the critique (--frame n,
+                                           --frames a-b). Frames count from 0
+  quill apply <fix.json> --to <picture.quill> --frame n [--layer name]
+                                           paint a script onto one frame of a
+                                           picture (on that layer) and save it
+                                           (--out other.quill to keep the first)
+  quill bake <script.json>                 a script's animations as a picture
+                                           with frames (<name>.quill), to draw on
+                                           in the app
   quill info <picture.quill>               describe a saved picture: its layers
   quill info <script.json>                 the same for the picture a script
                                            paints, with the commands that
@@ -325,8 +342,23 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let result = match args.first().map(String::as_str) {
+        // A picture (.quill), such as a hand-drawn animation from the app.
+        Some("export") if picture::picture_argument(&args[1..]).is_some() => {
+            picture::export(&args[1..])
+        }
+        Some("check") if picture::picture_argument(&args[1..]).is_some() => {
+            picture::check(&args[1..])
+        }
+        Some("render") if picture::picture_argument(&args[1..]).is_some() => {
+            picture::render(&args[1..])
+        }
         Some("render") => parse_render(&args[1..]).and_then(|options| render(&options)),
         Some("check") => parse_check(&args[1..]).and_then(|options| check(&options)),
+        Some("critique") if picture::picture_argument(&args[1..]).is_some() => {
+            picture::critique(&args[1..])
+        }
+        Some("apply") => picture::apply(&args[1..]),
+        Some("bake") => picture::bake(&args[1..]),
         Some("export") => {
             export::parse_export(&args[1..]).and_then(|options| export::export(&options))
         }
@@ -2428,6 +2460,12 @@ fn info(path: &Path) -> Result<(), Problem> {
             if layer.clip() { ", clip" } else { "" },
             if layer.lock() { ", lock" } else { "" },
         );
+    }
+    if document.is_animated() {
+        say!("  animation:");
+        for line in picture::frames_summary(&document) {
+            say!("    {line}");
+        }
     }
     Ok(())
 }

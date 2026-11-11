@@ -12,6 +12,22 @@ USAGE
                                            with its JSON, frames, a GIF or an MP4;
                                            a script without animations as still
                                            tiles, one per symbol, with a JSON
+  quill check|render|export|critique <picture.quill>
+                                           the same for a picture made in the app,
+                                           such as a hand-drawn animation: every
+                                           frame's box and motion, frames as PNGs
+                                           (--frame n, --all-frames, --frame-sheet,
+                                           --onion), the sprite sheet + JSON
+                                           (--sheet, --gif, --mp4, --frames-png,
+                                           --scale), the critique (--frame n,
+                                           --frames a-b). Frames count from 0
+  quill apply <fix.json> --to <picture.quill> --frame n [--layer name]
+                                           paint a script onto one frame of a
+                                           picture (on that layer) and save it
+                                           (--out other.quill to keep the first)
+  quill bake <script.json>                 a script's animations as a picture
+                                           with frames (<name>.quill), to draw on
+                                           in the app
   quill info <picture.quill>               describe a saved picture: its layers
   quill info <script.json>                 the same for the picture a script
                                            paints, with the commands that

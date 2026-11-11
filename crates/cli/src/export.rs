@@ -532,7 +532,7 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
 
 /// The ffmpeg command that turns the numbered frames into an MP4 that
 /// plays everywhere (H.264, even sizes, fast start).
-fn ffmpeg_command(frames_folder: &Path, fps: f32, mp4: &Path) -> Vec<String> {
+pub(crate) fn ffmpeg_command(frames_folder: &Path, fps: f32, mp4: &Path) -> Vec<String> {
     [
         "ffmpeg",
         "-y",
@@ -558,7 +558,7 @@ fn ffmpeg_command(frames_folder: &Path, fps: f32, mp4: &Path) -> Vec<String> {
 }
 
 /// A command as one line to paste into a terminal.
-fn shell_words(command: &[String]) -> String {
+pub(crate) fn shell_words(command: &[String]) -> String {
     command
         .iter()
         .map(|word| {

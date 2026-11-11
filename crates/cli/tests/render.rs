@@ -2057,3 +2057,205 @@ fn regions_are_listed_by_check_and_written_beside_the_picture() {
 
 /// The first row of the speckled grass tile above (g grass, d dark, l light).
 const FIRST_SPECKLE_ROW: &str = "gggggggggddggggg";
+
+/// The animation saved by 0.6.0 (four frames, frame 3 held twice, a
+/// "walk" stretch), as the app makes them.
+fn walk_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/tests/fixtures/walk-0.6.0.quill")
+}
+
+/// Phase 6: an agent can read, check, render and export a hand-drawn
+/// animation, improve one frame, and turn a script into frames.
+#[test]
+fn quill_checks_renders_and_exports_a_hand_drawn_animation() {
+    let out = folder("hand-drawn");
+    std::fs::create_dir_all(&out).unwrap();
+    let walk = out.join("walk.quill");
+    std::fs::copy(walk_fixture(), &walk).unwrap();
+    let run = |args: &[&str]| {
+        let output = quill().args(args).output().unwrap();
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let path = walk.to_str().unwrap();
+    let out_dir = out.to_str().unwrap();
+
+    let (code, text, err) = run(&["info", path]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(text.contains("4 frames (from 0"), "{text}");
+    assert!(text.contains("held: frame 3 x2"), "{text}");
+    assert!(
+        text.contains("stretches: walk frames 0-3 (8 fps, loops)"),
+        "{text}"
+    );
+    assert!(text.contains("Layer 1 still, Layer 2 animated"), "{text}");
+
+    let (code, text, err) = run(&["check", path]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        text.contains("0: x 40..80, y 100..140, middle (60, 120)"),
+        "{text}"
+    );
+    assert!(text.contains("3: x 220..260"), "{text}");
+    assert!(text.contains("biggest step 60 px"), "{text}");
+    assert!(text.contains("it pops when it starts again"), "{text}");
+
+    let (code, text, err) = run(&[
+        "render",
+        path,
+        "--frame",
+        "2",
+        "--onion",
+        "--frame-sheet",
+        "--out",
+        out_dir,
+    ]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(text.contains("walk-002.png"), "{text}");
+    let onion = quill_engine::image::Image::load(&out.join("walk-002-onion.png")).unwrap();
+    // Frame 1's square (x 100..140) is a red ghost; frame 2's own is solid.
+    let ghost = onion.pixel(110, 110);
+    assert!(
+        ghost[0] > ghost[2] && ghost[0] > ghost[1],
+        "red ghost: {ghost:?}"
+    );
+    assert_eq!(onion.pixel(170, 110), [240, 200, 40, 255]);
+    assert!(out.join("walk-frames.png").exists());
+    let (code, _, err) = run(&["render", path, "--frame", "9", "--out", out_dir]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("4 frames (0 to 3), so there's no frame 9"),
+        "{err}"
+    );
+
+    let (code, _, err) = run(&[
+        "export",
+        path,
+        "--sheet",
+        "--gif",
+        "--frames-png",
+        "--out",
+        out_dir,
+    ]);
+    assert_eq!(code, Some(0), "{err}");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("walk.json")).unwrap()).unwrap();
+    assert_eq!(
+        json["animations"]["walk"]["frames"],
+        serde_json::json!([0, 1, 2, 3, 3])
+    );
+    assert_eq!(json["animations"]["walk"]["fps"], 8.0);
+    assert!(
+        std::fs::read(out.join("walk.gif"))
+            .unwrap()
+            .starts_with(b"GIF89a")
+    );
+    assert!(out.join("walk-003.png").exists());
+
+    let (code, text, err) = run(&["critique", path, "--frames", "0-3"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(text.contains("no intent block"), "{text}");
+    assert!(text.contains("frame 3:"), "{text}");
+
+    // Improve frame 2 only, on Layer 2.
+    let fix = out.join("fix.json");
+    std::fs::write(
+        &fix,
+        r##"{ "commands": [ { "cmd": "canvas", "width": 320, "height": 200 },
+            { "cmd": "rect", "x": 10, "y": 10, "width": 5, "height": 5, "fill": "#123456" } ] }"##,
+    )
+    .unwrap();
+    let (code, text, err) = run(&[
+        "apply",
+        fix.to_str().unwrap(),
+        "--to",
+        path,
+        "--frame",
+        "2",
+        "--layer",
+        "Layer 2",
+    ]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(text.contains("to frame 2"), "{text}");
+    let document = quill_engine::file::open(&walk).unwrap();
+    assert_eq!(document.frame(), 1, "the frame shown is kept");
+    let on = |frame: usize| {
+        document.frame_picture(frame).layers()[1]
+            .surface
+            .pixel(12, 12)
+            .a
+    };
+    assert_eq!((on(1), on(2), on(3)), (0, 255, 0), "on frame 2 only");
+    let (code, _, err) = run(&[
+        "apply",
+        fix.to_str().unwrap(),
+        "--to",
+        path,
+        "--layer",
+        "Nope",
+    ]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("no layer called \"Nope\""), "{err}");
+    let _ = std::fs::remove_dir_all(out);
+}
+
+#[test]
+fn quill_bakes_a_script_animation_into_frames_and_applies_pixel_fixes() {
+    let out = folder("bake");
+    std::fs::create_dir_all(&out).unwrap();
+    let pixel = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/duck-pixel.json");
+    let output = quill()
+        .args(["bake", pixel.to_str().unwrap(), "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("10 frames"), "{text}");
+    assert!(text.contains("stretches: idle frames 0-3"), "{text}");
+    let baked = out.join("duck-pixel.quill");
+    let document = quill_engine::file::open(&baked).unwrap();
+    assert_eq!((document.width(), document.frame_count()), (32, 10));
+    // A pixel fix lands as whole pixels on the frame asked for.
+    let fix = out.join("glint.json");
+    std::fs::write(
+        &fix,
+        r##"{ "palette": { "white": "#FFFFFF" }, "commands": [
+            { "cmd": "canvas", "width": 32, "height": 32, "pixel": true },
+            { "cmd": "pixels", "at": [1, 1], "colors": { "w": "white" }, "rows": ["w"] } ] }"##,
+    )
+    .unwrap();
+    let output = quill()
+        .args([
+            "apply",
+            fix.to_str().unwrap(),
+            "--to",
+            baked.to_str().unwrap(),
+            "--frame",
+            "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document = quill_engine::file::open(&baked).unwrap();
+    let image = |frame| {
+        quill_engine::image::Image::of_document(
+            &document.frame_picture(frame),
+            quill_engine::document::Background::Transparent,
+        )
+    };
+    assert_eq!(image(5).pixel(1, 1), [255, 255, 255, 255]);
+    assert_eq!(image(4).pixel(1, 1)[3], 0);
+    let _ = std::fs::remove_dir_all(out);
+}
