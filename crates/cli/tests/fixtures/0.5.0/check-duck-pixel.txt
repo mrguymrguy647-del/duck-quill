@@ -8,7 +8,7 @@ OK: examples/duck-pixel.json (painted in<time>)
   motion in "walk" (6 frames, loops):
     command 1 (use "duck"): middle (17, 19) in frame 0 to (17, 18) in frame 5; biggest step 0 px (frame 0 to 1)
   layers, bottom to top:
-    Layer 1: x 4..29, y 8..31
+    Layer 1: x 4..29, y 8..31 (animation command 1)
   named groups and uses (outermost):
     animation "idle" > command 1 (use "duck"): x 5..29, y 8..30 (7 inside)
     (--detail lists the 7 inside these too)

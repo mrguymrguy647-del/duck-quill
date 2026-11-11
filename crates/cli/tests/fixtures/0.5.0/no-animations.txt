@@ -1,4 +1,4 @@
 --- stdout
 --- stderr
-error: this script has no animations: `export` is for scripts with an "animations" section (use `render` for a picture)
+error: there's nothing to export: this script has no animations and no symbols. `export` saves a script's "animations" as a sprite sheet, or each `define`d symbol as a still tile (use `render` for a single picture)
 --- exit code 1

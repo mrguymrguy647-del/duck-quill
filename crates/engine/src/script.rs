@@ -63,6 +63,74 @@ pub struct Script {
     pub pivot: Option<[f32; 2]>,
     /// What the painter means (see `Intent`). Paints nothing.
     pub intent: Option<Intent>,
+    /// The symbols `quill export` saves as still pictures, one frame
+    /// each (tiles, icons, a character's parts). `None`: not written;
+    /// a script with no animations then exports every symbol.
+    pub stills: Option<Vec<Still>>,
+}
+
+/// One still of a script's `stills` list: a symbol painted alone on the
+/// canvas, as a tile of the exported sheet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Still {
+    /// The tile's name in the sheet's JSON (the symbol's, unless `"as"`
+    /// gives another, so one symbol can be exported in several colours).
+    pub name: String,
+    /// How the symbol is placed: a `use` of it.
+    pub place: UseCmd,
+}
+
+impl Still {
+    /// The symbol `name`, placed as it was drawn.
+    pub fn of(name: &str) -> Still {
+        Still {
+            name: name.to_owned(),
+            place: UseCmd {
+                name: name.to_owned(),
+                ..UseCmd::default()
+            },
+        }
+    }
+
+    /// Reads one entry of `stills`: a symbol's name, or an object with
+    /// the fields of a `use` and an optional `"as"`.
+    fn parse(value: Value) -> Result<Still, String> {
+        match value {
+            Value::String(name) => Ok(Still::of(&name)),
+            Value::Object(mut fields) => {
+                let renamed = match fields.remove("as") {
+                    None => None,
+                    Some(Value::String(name)) => Some(name),
+                    Some(other) => return Err(format!("\"as\" must be a name, not {other}")),
+                };
+                let place: UseCmd =
+                    serde_json::from_value(Value::Object(fields)).map_err(|e| e.to_string())?;
+                Ok(Still {
+                    name: renamed.unwrap_or_else(|| place.name.clone()),
+                    place,
+                })
+            }
+            other => Err(format!(
+                "each still is a symbol's name, or {{\"name\": ..., \"as\": ...}} with the \
+                 fields of a `use`: not {other}"
+            )),
+        }
+    }
+
+    /// As written in a script.
+    fn to_value(&self) -> Value {
+        let plain = Still::of(&self.name);
+        if *self == plain {
+            return Value::String(self.name.clone());
+        }
+        let mut value = serde_json::to_value(&self.place).unwrap_or(Value::Null);
+        if self.name != self.place.name
+            && let Value::Object(fields) = &mut value
+        {
+            fields.insert("as".to_owned(), Value::String(self.name.clone()));
+        }
+        value
+    }
 }
 
 /// What the painter means: an optional block at the top of a script
@@ -1615,6 +1683,8 @@ struct RawScript {
     pivot: Option<[f32; 2]>,
     #[serde(default)]
     intent: Option<Intent>,
+    #[serde(default)]
+    stills: Option<Vec<Value>>,
 }
 
 /// An animation as written.
@@ -1777,6 +1847,50 @@ impl Script {
                 .check(&raw.palette)
                 .map_err(|message| ScriptError::general(format!("intent: {message}")))?;
         }
+        let stills = match raw.stills {
+            None => None,
+            Some(list) => {
+                let defined: Vec<&str> = commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        Command::Define(define) => Some(define.name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let has_includes = commands
+                    .iter()
+                    .any(|command| matches!(command, Command::Include(_)));
+                let mut stills: Vec<Still> = Vec::with_capacity(list.len());
+                for (i, value) in list.into_iter().enumerate() {
+                    let still = Still::parse(value).map_err(|m| {
+                        ScriptError::general(format!("stills, entry {}: {m}", i + 1))
+                    })?;
+                    // (A symbol from an included file is checked when it's painted.)
+                    if !has_includes && !defined.contains(&still.place.name.as_str()) {
+                        return Err(ScriptError::general(format!(
+                            "stills, entry {}: no symbol is called \"{}\" ({})",
+                            i + 1,
+                            still.place.name,
+                            if defined.is_empty() {
+                                "the script has no `define`".to_owned()
+                            } else {
+                                format!("defined: {}", defined.join(", "))
+                            }
+                        )));
+                    }
+                    if stills.iter().any(|other| other.name == still.name) {
+                        return Err(ScriptError::general(format!(
+                            "stills, entry {}: two stills are called \"{}\" (give one another \
+                             name with \"as\")",
+                            i + 1,
+                            still.name
+                        )));
+                    }
+                    stills.push(still);
+                }
+                Some(stills)
+            }
+        };
         Ok(Script {
             title: raw.title,
             notes: raw.notes,
@@ -1786,7 +1900,34 @@ impl Script {
             animations,
             pivot: raw.pivot,
             intent: raw.intent,
+            stills,
         })
+    }
+
+    /// The stills `quill export` saves: the `stills` list, or without
+    /// one every symbol the script defines, in the order written.
+    pub fn still_list(&self) -> Vec<Still> {
+        match &self.stills {
+            Some(stills) => stills.clone(),
+            None => self
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Define(define) => Some(Still::of(&define.name)),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// This script painting only `still`: its own commands, then the
+    /// symbol, with no animations.
+    pub fn still_script(&self, still: &Still) -> Script {
+        let mut script = self.clone();
+        script.animations = Animations::default();
+        script.stills = None;
+        script.commands.push(Command::Use(still.place.clone()));
+        script
     }
 
     /// Writes the script as JSON text: readable, one command per line.
@@ -1807,6 +1948,10 @@ impl Script {
         }
         if let Some(intent) = &self.intent {
             out += &format!("  \"intent\": {},\n", json(intent));
+        }
+        if let Some(stills) = &self.stills {
+            let list: Vec<Value> = stills.iter().map(Still::to_value).collect();
+            out += &format!("  \"stills\": {},\n", json(&list));
         }
         out += "  \"commands\": [\n";
         for (i, command) in self.commands.iter().enumerate() {

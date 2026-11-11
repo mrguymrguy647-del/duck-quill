@@ -1,7 +1,7 @@
 # Sprite sheets: the PNG and its JSON
 
-`quill export duck.json` writes `duck.png` and `duck.json` (and the app's **File → Export
-animation** does the same). This page says what's in them, so another program, such as Duck
+`quill export duck.json`, for a script with animations, writes `duck.png` and `duck.json` (and
+the app's **File → Export animation** does the same). This page says what's in them, so another program, such as Duck
 Forge, can load them.
 
 ## The picture
@@ -84,3 +84,8 @@ sprite each, at full size on a see-through background) and packs them into `grou
 | `tiles` | By name: `index` (the order given), and `x`, `y`, `width`, `height` of its rectangle in the PNG. Tiles of different sizes are packed in rows (`--columns` per row), each row as tall as its tallest tile. |
 
 A script with animations gives its first frame (use `quill export` for all its frames).
+
+**Many tiles in one script.** `quill export blocks.json`, for a script with no `animations`,
+writes the same two files (`blocks.png`, `blocks.json`) from one script: every symbol it
+`define`s is a tile, named after the symbol, or only those in its `"stills"` list
+(`docs/script-format.md`, "Stills"). The JSON is exactly the one above.

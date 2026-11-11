@@ -1,5 +1,7 @@
 //! `quill export`: an animated script as a sprite sheet with its JSON,
 //! numbered frames, a GIF and an MP4 (see `docs/sprite-sheet-format.md`).
+//! A script with no animations (or `--stills`) exports its symbols as
+//! still tiles: one PNG and a JSON in the tileset format.
 //!
 //! Every frame is painted once, at full size with a see-through
 //! background, then put into whichever files were asked for. `--scale`
@@ -11,9 +13,10 @@ use std::process::Command;
 use quill_engine::document::Background;
 use quill_engine::gif::save_gif;
 use quill_engine::image::{Color, Image, unpremultiply};
-use quill_engine::script::{PlayOptions, Sequence, parse_hex};
+use quill_engine::script::{PlayOptions, Player, Script, Sequence, parse_hex};
 use quill_engine::sprites::{SheetAnimation, sprite_sheet};
 
+use crate::atlas::{Tile, save_tiles};
 use crate::{Problem, failed, load};
 
 /// Enlarging more than this makes files nobody wants.
@@ -31,6 +34,13 @@ pub struct ExportOptions {
     scale: u32,
     /// Behind see-through parts of GIFs and MP4s.
     bg: Option<Color>,
+    /// `--stills`: the script's symbols as still pictures, one tile
+    /// each (what a script without animations exports anyway).
+    stills: bool,
+    /// Stills per row (default: about a square).
+    columns: Option<u32>,
+    /// See-through pixels between stills (and round the edge).
+    padding: u32,
 }
 
 pub fn parse_export(args: &[String]) -> Result<ExportOptions, Problem> {
@@ -44,6 +54,9 @@ pub fn parse_export(args: &[String]) -> Result<ExportOptions, Problem> {
         mp4: false,
         scale: 1,
         bg: None,
+        stills: false,
+        columns: None,
+        padding: 0,
     };
     let mut script = None;
     let mut rest = args.iter();
@@ -60,6 +73,29 @@ pub fn parse_export(args: &[String]) -> Result<ExportOptions, Problem> {
             "--frames" => options.frames = true,
             "--gif" => options.gif = true,
             "--mp4" => options.mp4 = true,
+            "--stills" => options.stills = true,
+            "--columns" | "--padding" => {
+                let (low, high) = if arg == "--columns" {
+                    (1, 256)
+                } else {
+                    (0, 64)
+                };
+                let text = value(arg)?;
+                let number = text
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (low..=high).contains(n))
+                    .ok_or_else(|| {
+                        Problem::Usage(format!(
+                            "{arg} must be a whole number from {low} to {high}, not {text}"
+                        ))
+                    })?;
+                if arg == "--columns" {
+                    options.columns = Some(number);
+                } else {
+                    options.padding = number;
+                }
+            }
             "--scale" => {
                 let text = value("--scale")?;
                 options.scale = text
@@ -104,6 +140,118 @@ pub fn parse_export(args: &[String]) -> Result<ExportOptions, Problem> {
     Ok(options)
 }
 
+/// `export` for stills: each symbol of the script (those in its
+/// `stills` list, or all of them) painted alone on the canvas, packed
+/// into `<name>.png` with `<name>.json` in the tileset format, the
+/// same shape `quill atlas` writes. `--frames` also saves each one as
+/// `<name>-<still>.png`.
+fn export_stills(options: &ExportOptions, script: &Script, stem: &str) -> Result<(), Problem> {
+    let problem = |e: &dyn std::fmt::Display| failed(format!("{}: {e}", options.script.display()));
+    if options.gif || options.mp4 || options.animation.is_some() {
+        return Err(failed(
+            "stills don't move: --gif, --mp4 and --animation are for a script's \"animations\" \
+             (stills take --sheet, --frames, --scale, --columns and --padding)",
+        ));
+    }
+    let stills = script.still_list();
+    if stills.is_empty() {
+        return Err(failed(
+            "there's nothing to export: this script has no animations and no symbols. `export` \
+             saves a script's \"animations\" as a sprite sheet, or each `define`d symbol as a \
+             still tile (use `render` for a single picture)",
+        ));
+    }
+    let folder = options.script.parent().map(Path::to_path_buf);
+    let mut tiles = Vec::with_capacity(stills.len());
+    let mut canvas = (0, 0);
+    for still in &stills {
+        let play = PlayOptions {
+            folder: folder.clone(),
+            ..PlayOptions::default()
+        };
+        let named = |e: &dyn std::fmt::Display| problem(&format!("still \"{}\": {e}", still.name));
+        let mut player = Player::new(script.still_script(still), play).map_err(|e| named(&e))?;
+        let mut document = player.create_document().map_err(|e| named(&e))?;
+        player
+            .run(&mut document, |_, _| {})
+            .map_err(|e| named(&e))?;
+        canvas = (document.width(), document.height());
+        let mut image = Image::of_document(&document, Background::Transparent);
+        if options.scale > 1 {
+            image = image.magnify(options.scale);
+        }
+        tiles.push(Tile {
+            name: still.name.clone(),
+            image,
+        });
+    }
+    let mut saved: Vec<String> = Vec::new();
+    if options.sheet {
+        let sheet = save_tiles(
+            &tiles,
+            &options.out,
+            stem,
+            options.columns,
+            options.padding,
+            options.scale,
+        )?;
+        saved.push(format!(
+            "{} and {} (sheet {} x {}, {} still{})",
+            sheet.png.display(),
+            sheet.json.display(),
+            sheet.size.0,
+            sheet.size.1,
+            tiles.len(),
+            if tiles.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if options.frames {
+        std::fs::create_dir_all(&options.out).map_err(|e| {
+            failed(format!(
+                "can't make the folder {}: {e}",
+                options.out.display()
+            ))
+        })?;
+        for tile in &tiles {
+            let path = options.out.join(format!("{stem}-{}.png", tile.name));
+            tile.image
+                .save_png(&path, true)
+                .map_err(|e| failed(format!("couldn't save {}: {e}", path.display())))?;
+        }
+        saved.push(format!("{} stills as {stem}-<name>.png", tiles.len()));
+    }
+    say!(
+        "Exported {}: {} still{} ({})",
+        options.script.display(),
+        tiles.len(),
+        if tiles.len() == 1 { "" } else { "s" },
+        if script.stills.is_some() {
+            "the script's \"stills\" list"
+        } else {
+            "every symbol; a \"stills\" list chooses some"
+        }
+    );
+    say!(
+        "  each {} x {}{}: {}",
+        canvas.0 * options.scale,
+        canvas.1 * options.scale,
+        if options.scale > 1 {
+            format!(" ({} times bigger, sharp pixels)", options.scale)
+        } else {
+            String::new()
+        },
+        tiles
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for line in &saved {
+        say!("  {line}");
+    }
+    Ok(())
+}
+
 /// One animation, painted: its frames at full size, see-through.
 struct Painted {
     name: String,
@@ -115,11 +263,13 @@ struct Painted {
 pub fn export(options: &ExportOptions) -> Result<(), Problem> {
     let script = load(&options.script)?;
     let problem = |e: &dyn std::fmt::Display| failed(format!("{}: {e}", options.script.display()));
-    if script.animations.is_empty() {
-        return Err(failed(
-            "this script has no animations: `export` is for scripts with an \"animations\" \
-             section (use `render` for a picture)",
-        ));
+    let stem = options.script.file_stem().map_or_else(
+        || "animation".to_owned(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    // Nothing moves: the script's symbols as still tiles.
+    if script.animations.is_empty() || options.stills {
+        return export_stills(options, &script, &stem);
     }
     if let Some(name) = &options.animation
         && !script.animations.contains_key(name)
@@ -130,10 +280,6 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
             names.join(", ")
         )));
     }
-    let stem = options.script.file_stem().map_or_else(
-        || "animation".to_owned(),
-        |s| s.to_string_lossy().into_owned(),
-    );
     let folder = options.script.parent().map(Path::to_path_buf);
     std::fs::create_dir_all(&options.out).map_err(|e| {
         failed(format!(

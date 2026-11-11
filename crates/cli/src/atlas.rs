@@ -76,9 +76,9 @@ pub fn parse_atlas(args: &[String]) -> Result<AtlasOptions, Problem> {
 }
 
 /// One tile, painted.
-struct Tile {
-    name: String,
-    image: Image,
+pub(crate) struct Tile {
+    pub name: String,
+    pub image: Image,
 }
 
 /// Where each tile goes: `(x, y)`, and the whole picture's size.
@@ -141,13 +141,61 @@ pub fn atlas(options: &AtlasOptions) -> Result<(), Problem> {
         tiles.push(Tile { name, image });
     }
 
+    let saved = save_tiles(
+        &tiles,
+        &options.out,
+        &options.name,
+        options.columns,
+        options.padding,
+        options.scale,
+    )?;
+    say!(
+        "Packed {} tiles into {} x {} ({}).",
+        tiles.len(),
+        saved.size.0,
+        saved.size.1,
+        if saved.grid {
+            "one size: a grid"
+        } else {
+            "different sizes: in rows"
+        }
+    );
+    say!("  saved: {}, {}", saved.png.display(), saved.json.display());
+    for note in notes {
+        say!("  ({note})");
+    }
+    Ok(())
+}
+
+/// What `save_tiles` wrote.
+pub(crate) struct SavedTiles {
+    pub png: PathBuf,
+    pub json: PathBuf,
+    /// The picture's size.
+    pub size: (u32, u32),
+    /// Every tile is one size, so the picture is also a plain grid.
+    pub grid: bool,
+}
+
+/// Packs `tiles` (already at `scale`) into `<name>.png` in `out`, with
+/// `<name>.json` saying where each one is: the tileset format of
+/// `docs/sprite-sheet-format.md`. `quill atlas` and `quill export`'s
+/// stills both save through this, so their files are the same shape.
+pub(crate) fn save_tiles(
+    tiles: &[Tile],
+    out: &Path,
+    name: &str,
+    columns: Option<u32>,
+    padding: u32,
+    scale: u32,
+) -> Result<SavedTiles, Problem> {
     // Pack them.
     let sizes: Vec<(u32, u32)> = tiles
         .iter()
         .map(|t| (t.image.width(), t.image.height()))
         .collect();
     let same_size = sizes.windows(2).all(|pair| pair[0] == pair[1]);
-    let (places, (width, height)) = pack(&sizes, options.columns, options.padding);
+    let (places, (width, height)) = pack(&sizes, columns, padding);
     let mut sheet = Image::new(width, height, [0, 0, 0, 0]);
     for (tile, &(left, top)) in tiles.iter().zip(&places) {
         for y in 0..tile.image.height() {
@@ -158,13 +206,9 @@ pub fn atlas(options: &AtlasOptions) -> Result<(), Problem> {
     }
 
     // Save the picture and its JSON.
-    std::fs::create_dir_all(&options.out).map_err(|e| {
-        failed(format!(
-            "can't make the folder {}: {e}",
-            options.out.display()
-        ))
-    })?;
-    let png = options.out.join(format!("{}.png", options.name));
+    std::fs::create_dir_all(out)
+        .map_err(|e| failed(format!("can't make the folder {}: {e}", out.display())))?;
+    let png = out.join(format!("{name}.png"));
     sheet
         .save_png(&png, true)
         .map_err(|e| failed(format!("couldn't save {}: {e}", png.display())))?;
@@ -182,9 +226,9 @@ pub fn atlas(options: &AtlasOptions) -> Result<(), Problem> {
         );
     }
     let mut description = json!({
-        "image": format!("{}.png", options.name),
-        "scale": options.scale,
-        "padding": options.padding,
+        "image": format!("{name}.png"),
+        "scale": scale,
+        "padding": padding,
     });
     if same_size && let Some(&(w, h)) = sizes.first() {
         // One size: also a plain grid, cut by the tile size.
@@ -194,27 +238,16 @@ pub fn atlas(options: &AtlasOptions) -> Result<(), Problem> {
         description["rows"] = json!(tiles.len().div_ceil(columns));
     }
     description["tiles"] = Value::Object(entries);
-    let json_path = options.out.join(format!("{}.json", options.name));
+    let json_path = out.join(format!("{name}.json"));
     let text = serde_json::to_string_pretty(&description).unwrap_or_default() + "\n";
     std::fs::write(&json_path, text)
         .map_err(|e| failed(format!("couldn't save {}: {e}", json_path.display())))?;
-
-    say!(
-        "Packed {} tiles into {} x {} ({}).",
-        tiles.len(),
-        width,
-        height,
-        if same_size {
-            "one size: a grid"
-        } else {
-            "different sizes: in rows"
-        }
-    );
-    say!("  saved: {}, {}", png.display(), json_path.display());
-    for note in notes {
-        say!("  ({note})");
-    }
-    Ok(())
+    Ok(SavedTiles {
+        png,
+        json: json_path,
+        size: (width, height),
+        grid: same_size,
+    })
 }
 
 #[cfg(test)]

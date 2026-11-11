@@ -19,6 +19,7 @@ use crate::document::Document;
 use crate::fill::Rgba;
 use crate::image::unpremultiply;
 use crate::layer::Layer;
+use crate::surface::Surface;
 use crate::tile::Rgba8;
 
 /// How a pixel canvas is painted and shrunk.
@@ -40,31 +41,27 @@ impl PixelMode {
     /// size (`width` x `height`): every layer, with its settings.
     pub fn shrink(&self, document: &Document, width: u32, height: u32) -> Document {
         let s = self.supersample.max(1);
-        let mut small = Document::new(width, height);
-        small.set_paper(document.paper());
-        let first = small.active_id();
-        for (index, layer) in document.layers().iter().enumerate() {
-            let mut shrunk = small.new_layer();
-            shrunk.set_props(layer.props());
-            self.shrink_layer(layer, &mut shrunk, width, height, s);
-            small.insert_layer(index, shrunk);
-        }
-        // The layer the new document started with isn't wanted.
-        if document.layers().len() > 1 {
-            small.remove_layer(first);
-        } else if let Some(only) = small.layers().last().map(Layer::id) {
-            // One layer: replace the starter with it.
-            let id = only;
-            small.remove_layer(first);
-            small.set_active(id);
-        }
-        if let Some(active) = document.layer_index(document.active_id())
-            && let Some(layer) = small.layers().get(active)
-        {
-            let id = layer.id();
-            small.set_active(id);
-        }
-        small
+        // Each layer keeps its own number, so what the player noted
+        // about a layer while painting (which commands painted on it)
+        // still finds that layer in the shrunk picture.
+        let layers: Vec<Layer> = document
+            .layers()
+            .iter()
+            .map(|layer| {
+                let mut shrunk = Layer::from_saved(layer.id(), layer.props(), Surface::new());
+                self.shrink_layer(layer, &mut shrunk, width, height, s);
+                shrunk
+            })
+            .collect();
+        let active = document.layer_index(document.active_id()).unwrap_or(0);
+        Document::from_parts(
+            width,
+            height,
+            document.paper(),
+            layers,
+            active,
+            document.next_layer_number(),
+        )
     }
 
     fn shrink_layer(&self, big: &Layer, small: &mut Layer, width: u32, height: u32, s: u32) {

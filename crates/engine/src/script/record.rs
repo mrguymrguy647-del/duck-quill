@@ -706,6 +706,7 @@ pub fn script(
         animations: Animations::default(),
         pivot: None,
         intent: None,
+        stills: None,
     }
 }
 

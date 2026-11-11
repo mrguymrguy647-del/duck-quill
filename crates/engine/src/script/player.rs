@@ -3993,7 +3993,7 @@ impl Player {
         let opacity = self.frame().opacity;
         for (row, text) in command.rows.iter().enumerate() {
             let chars: Vec<char> = text.chars().collect();
-            if chars.len() % key_length != 0 {
+            if !chars.len().is_multiple_of(key_length) {
                 return Err(format!(
                     "row {} has {} characters, but each pixel is {key_length} characters here \
                      (the `colors` keys' length): {} too many or {} too few",

@@ -9,7 +9,9 @@ USAGE
                                            the ones inside others; --animation
                                            and --frame choose the frame shown)
   quill export <script.json> [options]     an animated script as a sprite sheet
-                                           with its JSON, frames, a GIF or an MP4
+                                           with its JSON, frames, a GIF or an MP4;
+                                           a script without animations as still
+                                           tiles, one per symbol, with a JSON
   quill info <picture.quill>               describe a saved picture: its layers
   quill info <script.json>                 the same for the picture a script
                                            paints, with the commands that
@@ -126,11 +128,16 @@ CRITIQUE OPTIONS
   --frames <a>-<b>   one short line per frame, and which frame is worst
   --animation <name> which animation, if the script has more than one
 
-EXPORT OPTIONS (for scripts with animations; docs/sprite-sheet-format.md)
+EXPORT OPTIONS (docs/sprite-sheet-format.md)
   --out <folder>     where to save (default: out)
   --sheet            <name>.png (one row per animation) and <name>.json: the
                      default when nothing else is asked for
   --frames           every frame as <name>-<animation>-<frame>.png
+  --stills           the script's symbols as still tiles (those in its
+                     "stills" list, or all): <name>.png and a <name>.json
+                     like atlas's. A script with no animations does this
+                     anyway; --frames then saves <name>-<still>.png, and
+                     --columns and --padding work as for atlas
   --gif              <name>-<animation>.gif, at the animation's fps
   --mp4              <name>-<animation>.mp4 through ffmpeg (or the frames and
                      the exact ffmpeg command to run, if it isn't installed)

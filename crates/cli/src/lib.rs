@@ -66,7 +66,9 @@ USAGE
                                            the ones inside others; --animation
                                            and --frame choose the frame shown)
   quill export <script.json> [options]     an animated script as a sprite sheet
-                                           with its JSON, frames, a GIF or an MP4
+                                           with its JSON, frames, a GIF or an MP4;
+                                           a script without animations as still
+                                           tiles, one per symbol, with a JSON
   quill info <picture.quill>               describe a saved picture: its layers
   quill info <script.json>                 the same for the picture a script
                                            paints, with the commands that
@@ -183,11 +185,16 @@ CRITIQUE OPTIONS
   --frames <a>-<b>   one short line per frame, and which frame is worst
   --animation <name> which animation, if the script has more than one
 
-EXPORT OPTIONS (for scripts with animations; docs/sprite-sheet-format.md)
+EXPORT OPTIONS (docs/sprite-sheet-format.md)
   --out <folder>     where to save (default: out)
   --sheet            <name>.png (one row per animation) and <name>.json: the
                      default when nothing else is asked for
   --frames           every frame as <name>-<animation>-<frame>.png
+  --stills           the script's symbols as still tiles (those in its
+                     \"stills\" list, or all): <name>.png and a <name>.json
+                     like atlas's. A script with no animations does this
+                     anyway; --frames then saves <name>-<still>.png, and
+                     --columns and --padding work as for atlas
   --gif              <name>-<animation>.gif, at the animation's fps
   --mp4              <name>-<animation>.mp4 through ffmpeg (or the frames and
                      the exact ffmpeg command to run, if it isn't installed)
@@ -1120,7 +1127,11 @@ fn render(options: &RenderOptions) -> Result<(), Problem> {
         );
     }
     let layers = layer_boxes(&document, scale, shown, Some(&report));
-    let warnings = warnings(&report, &layers);
+    let stills = paint_stills(&options.script, &script, &document)?;
+    let warnings = warnings(&report, &layers, &stills, &document);
+    if !stills.is_empty() {
+        say!("  {}", stills_line(&stills));
+    }
     if options.detail {
         print_findings(&layers, &report, &warnings, true, command_count);
     } else {
@@ -1500,14 +1511,46 @@ fn describe_box(area: Option<PixelRect>) -> String {
     }
 }
 
-/// The player's warnings, and empty layers.
-fn warnings(report: &Report, layers: &[LayerBox]) -> Vec<String> {
+/// The player's warnings, and empty layers. What the script's `stills`
+/// use and paint counts too (see `paint_stills`).
+fn warnings(
+    report: &Report,
+    layers: &[LayerBox],
+    stills: &[PaintedStill],
+    document: &Document,
+) -> Vec<String> {
     let mut warnings = report.warnings.clone();
-    warnings.extend(unused_warnings(&[report]));
+    for still in stills {
+        warnings.extend(
+            still
+                .report
+                .warnings
+                .iter()
+                .map(|warning| format!("still \"{}\": {warning}", still.name)),
+        );
+    }
+    let reports: Vec<&Report> = std::iter::once(report)
+        .chain(stills.iter().map(|still| &still.report))
+        .collect();
+    warnings.extend(unused_warnings(&reports));
+    let painted = ever_painted(&reports, document);
     for layer in layers.iter().filter(|layer| layer.area.is_none()) {
-        warnings.push(format!("layer \"{}\" is empty", layer.name));
+        if !painted.contains(layer.name.as_str()) {
+            warnings.push(format!("layer \"{}\" is empty", layer.name));
+        }
     }
     warnings
+}
+
+/// The names of the layers that any of `reports` painted on (layers
+/// are made in the same order every time, so their ids match).
+fn ever_painted<'a>(reports: &[&Report], document: &'a Document) -> HashSet<&'a str> {
+    reports
+        .iter()
+        .flat_map(|r| r.painted_by.keys())
+        .filter_map(|id| document.layer(*id))
+        .map(Layer::name)
+        .collect()
 }
 
 /// `entries` joined with " | " into lines about `width` long; at most
@@ -1861,6 +1904,75 @@ fn paint_frame(
     Ok((document, player.report(), snapshots))
 }
 
+/// One still of a script, painted alone (see `Script::still_list`).
+struct PaintedStill {
+    name: String,
+    /// The box around its paint, all layers together.
+    area: Option<PixelRect>,
+    report: Report,
+}
+
+/// The script's stills, each painted alone, when the script is a set of
+/// stills: it has a `stills` list, or it has symbols, no animations and
+/// its own commands painted nothing on `document` (tiles to export, not
+/// a picture). Otherwise none.
+///
+/// `check` and `render` count what the stills use, so a script of tiles
+/// isn't told that every symbol is "never used" and its layer empty.
+fn paint_stills(
+    path: &Path,
+    script: &Script,
+    document: &Document,
+) -> Result<Vec<PaintedStill>, Problem> {
+    let blank = document
+        .layers()
+        .iter()
+        .all(|layer| layer.surface.painted_area().is_none());
+    if !script.animations.is_empty() || (script.stills.is_none() && !blank) {
+        return Ok(Vec::new());
+    }
+    let folder = path.parent().map(Path::to_path_buf);
+    let mut stills = Vec::new();
+    for still in script.still_list() {
+        let options = PlayOptions {
+            folder: folder.clone(),
+            ..PlayOptions::default()
+        };
+        let (painted, report, _) = paint_frame(path, &script.still_script(&still), options)
+            .map_err(|problem| match problem {
+                Problem::Failed(message) => failed(format!(
+                    "{message} (while painting still \"{}\")",
+                    still.name
+                )),
+                other => other,
+            })?;
+        let area = painted
+            .layers()
+            .iter()
+            .filter_map(|layer| layer.surface.painted_area())
+            .reduce(|a, b| a.union(&b));
+        stills.push(PaintedStill {
+            name: still.name,
+            area,
+            report,
+        });
+    }
+    Ok(stills)
+}
+
+/// The line `check` and `render` print about a script's stills.
+fn stills_line(stills: &[PaintedStill]) -> String {
+    let boxes: Vec<String> = stills
+        .iter()
+        .map(|still| format!("{} {}", still.name, describe_box(still.area)))
+        .collect();
+    format!(
+        "stills ({}; `quill export` saves each as a tile): {}",
+        stills.len(),
+        boxes.join(" | ")
+    )
+}
+
 /// The animation a frame is shown from: `shown`, or the first (if the
 /// script has any), checked to exist and to have the frame.
 fn shown_animation(
@@ -1973,19 +2085,27 @@ fn check(options: &CheckOptions) -> Result<(), Problem> {
     if motions.is_empty() {
         warnings.extend(report.warnings.iter().cloned());
     }
+    // Tiles to export: each still is painted too, and what it uses counts.
+    let stills = paint_stills(path, &script, &document)?;
+    for still in &stills {
+        warnings.extend(
+            still
+                .report
+                .warnings
+                .iter()
+                .map(|warning| format!("still \"{}\": {warning}", still.name)),
+        );
+    }
     let all_reports: Vec<&Report> = if motions.is_empty() {
-        vec![&report]
+        std::iter::once(&report)
+            .chain(stills.iter().map(|still| &still.report))
+            .collect()
     } else {
         motions.iter().flat_map(|m| m.reports.iter()).collect()
     };
-    // A layer is empty only if no frame of any animation paints on it
-    // (layers are made in the same order in every frame, so ids match).
-    let ever_painted: HashSet<&str> = all_reports
-        .iter()
-        .flat_map(|r| r.painted_by.keys())
-        .filter_map(|id| document.layer(*id))
-        .map(Layer::name)
-        .collect();
+    // A layer is empty only if no frame of any animation (and no still)
+    // paints on it.
+    let ever_painted = ever_painted(&all_reports, &document);
     for layer in layers.iter().filter(|layer| layer.area.is_none()) {
         if ever_painted.contains(layer.name.as_str()) {
             continue;
@@ -2034,6 +2154,9 @@ fn check(options: &CheckOptions) -> Result<(), Problem> {
     }
     if !snapshots.is_empty() {
         say!("  snapshots: {}", snapshots.join(", "));
+    }
+    if !stills.is_empty() {
+        say!("  {}", stills_line(&stills));
     }
     if !script.animations.is_empty() {
         let list: Vec<String> = script

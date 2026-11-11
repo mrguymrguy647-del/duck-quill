@@ -52,6 +52,7 @@ Render scripts with `quill` (see the README), or watch them being painted in the
 | `seed` | no | Where randomness starts. Default `1`. Change it to get a different random pattern. |
 | `palette` | no | Colour names, defined once: `{"sky": "#88BBFF", "shadow": "#1A1A3080"}`. |
 | `intent` | no | What the painter means (next section). Paints nothing. |
+| `stills` | no | Which symbols `quill export` saves as still tiles (see [Stills](#stills-tiles-and-icons-from-one-script)). |
 
 Every command is an object with a `"cmd"` field. Any command may also have a `"note"` field: a
 comment for people, ignored when playing. Misspelt fields are errors (not silently ignored).
@@ -963,6 +964,39 @@ reported by its row and column. `quill render --pixels` prints a pixel canvas ba
 It works on any canvas (on a big one the "pixels" are canvas pixels too). Single pixels, lines,
 rectangles, circles and the paint bucket need nothing new: `rect`, `line`, `ellipse`, `polygon`
 and `fill` already come out crisp on a pixel canvas.
+
+## Stills: tiles and icons from one script
+
+```json
+{
+  "palette": { "grass": "#3A8A2A", "dirt": "#7A5230", "ink": "#202020" },
+  "stills": ["grass_block", "dirt_block", { "name": "dirt_block", "as": "dirt_dark", "colors": { "dirt": "ink" } }],
+  "commands": [
+    { "cmd": "canvas", "width": 16, "height": 16, "pixel": true },
+    { "cmd": "define", "name": "dirt_block", "commands": [
+      { "cmd": "rect", "x": 0, "y": 0, "width": 16, "height": 16, "fill": "dirt" } ] },
+    { "cmd": "define", "name": "grass_block", "commands": [
+      { "cmd": "use", "name": "dirt_block" },
+      { "cmd": "rect", "x": 0, "y": 0, "width": 16, "height": 4, "fill": "grass" } ] }
+  ]
+}
+```
+
+A set of tiles, icons or parts lives in one script as `define`d symbols, sharing one palette.
+`quill export tiles.json` paints each still alone on the canvas and saves them in one picture,
+`tiles.png`, with `tiles.json` saying where each one is: the same JSON as `quill atlas` writes
+(`docs/sprite-sheet-format.md`, "Tilesets"). `--frames` also saves each as `tiles-<name>.png`;
+`--columns`, `--padding` and `--scale` work as for `atlas`.
+
+- Without a `stills` list, every symbol is a still, in the order defined. With one, only those
+  listed, in that order (so helper symbols stay out).
+- An entry is a symbol's name, or an object with the fields of a `use` (`translate`, `colors`,
+  `with`, `mirror` and the rest), plus `"as"` to give the tile another name: one symbol in
+  several colours, or a symbol drawn around `[0, 0]` moved onto the canvas.
+- No fake one-frame animations are needed. A script with `animations` exports those as before;
+  `--stills` exports its stills too.
+- `check` and `render` list the stills with their boxes, and count what they use: a symbol that
+  is only a still isn't "never used".
 
 ## Areas
 

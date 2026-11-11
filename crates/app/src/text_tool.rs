@@ -248,6 +248,7 @@ fn paint(document: &mut Document, layer: LayerId, command: &TextCmd) -> Vec<Box<
         animations: quill_engine::script::Animations::default(),
         pivot: None,
         intent: None,
+        stills: None,
         commands: vec![
             Command::Canvas(CanvasCmd::default()),
             Command::Text(command.clone()),

@@ -1616,3 +1616,263 @@ fn seventy_colours_fit_in_pixels_rows_and_print_back_with_two_letter_codes() {
     assert!(!text.contains('?'), "{text}");
     let _ = std::fs::remove_dir_all(out);
 }
+
+/// A script of tiles, shaped like the Duck Craft atlas: every tile a
+/// `define`d symbol, no animations, nothing drawn outside the symbols.
+const TILES: &str = r##"{ "palette": { "g1": "#3A8A2A", "g2": "#4CA03A", "d1": "#7A5230",
+    "d2": "#8C6238", "s1": "#808080", "spare": "#FF00FF" },
+  "commands": [
+    { "cmd": "canvas", "width": 8, "height": 8, "pixel": true },
+    { "cmd": "define", "name": "grass", "commands": [
+      { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "g1" },
+      { "cmd": "pixels", "at": [0, 0], "colors": { "b": "g2" }, "rows": ["b.b.b.b."] } ] },
+    { "cmd": "define", "name": "dirt", "commands": [
+      { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "d1" },
+      { "cmd": "pixels", "at": [2, 2], "colors": { "x": "d2" }, "rows": ["x.x"] } ] },
+    { "cmd": "define", "name": "stone", "commands": [
+      { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "s1" } ] }
+  ] }"##;
+
+/// Phase 6, fix 2: `export` used to refuse a script without animations.
+/// Now it saves each symbol as a still tile, in `quill atlas`'s JSON shape.
+#[test]
+fn export_saves_a_script_of_tiles_as_stills_in_the_tileset_format() {
+    let out = folder("stills");
+    std::fs::create_dir_all(&out).unwrap();
+    let script = out.join("blocks.json");
+    std::fs::write(&script, TILES).unwrap();
+    let run = |args: &[&str]| {
+        // (`check` saves nothing, so it takes no --out.)
+        let mut command = quill();
+        command.args(args);
+        if args[0] != "check" {
+            command.arg("--out").arg(out.join("run"));
+        }
+        let output = command.output().unwrap();
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let path = script.to_str().unwrap();
+    // (Into a subfolder: the sheet's JSON has the script's own name.)
+    let sheets = out.join("sheets");
+    let output = quill()
+        .args(["export", path, "--frames", "--sheet", "--out"])
+        .arg(&sheets)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("3 stills"));
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sheets.join("blocks.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["image"], "blocks.png");
+    assert_eq!(json["tile"]["width"], 8);
+    assert_eq!(
+        (json["columns"].as_u64(), json["rows"].as_u64()),
+        (Some(2), Some(2))
+    );
+    let names: Vec<&String> = json["tiles"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["grass", "dirt", "stone"]);
+    assert_eq!(json["tiles"]["dirt"]["index"], 1);
+    assert_eq!(
+        (
+            json["tiles"]["dirt"]["x"].as_u64(),
+            json["tiles"]["dirt"]["y"].as_u64()
+        ),
+        (Some(8), Some(0))
+    );
+    assert_eq!(
+        (
+            json["tiles"]["stone"]["x"].as_u64(),
+            json["tiles"]["stone"]["y"].as_u64()
+        ),
+        (Some(0), Some(8))
+    );
+    // The picture: each tile in its place, in its own colours.
+    let sheet = quill_engine::image::Image::load(&sheets.join("blocks.png")).unwrap();
+    assert_eq!((sheet.width(), sheet.height()), (16, 16));
+    assert_eq!(
+        sheet.pixel(0, 0),
+        [0x4C, 0xA0, 0x3A, 255],
+        "grass, a light pixel"
+    );
+    assert_eq!(sheet.pixel(1, 0), [0x3A, 0x8A, 0x2A, 255], "grass");
+    assert_eq!(
+        sheet.pixel(8 + 2, 2),
+        [0x8C, 0x62, 0x38, 255],
+        "dirt's speck"
+    );
+    assert_eq!(sheet.pixel(3, 8 + 3), [0x80, 0x80, 0x80, 255], "stone");
+    assert_eq!(sheet.pixel(12, 12)[3], 0, "the fourth cell is empty");
+    assert!(sheets.join("blocks-grass.png").exists());
+    assert!(sheets.join("blocks-stone.png").exists());
+
+    // The same JSON shape as `quill atlas` writes: the same keys, top
+    // level and per tile.
+    let single = out.join("single.json");
+    std::fs::write(
+        &single,
+        r##"{ "palette": { "a": "#102030" }, "commands": [
+            { "cmd": "canvas", "width": 8, "height": 8, "pixel": true },
+            { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "a" } ] }"##,
+    )
+    .unwrap();
+    let packed = out.join("atlas");
+    let output = quill()
+        .args(["atlas", single.to_str().unwrap(), "--name", "set", "--out"])
+        .arg(&packed)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let atlas: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(packed.join("set.json")).unwrap()).unwrap();
+    let keys = |value: &serde_json::Value| -> Vec<String> {
+        value.as_object().unwrap().keys().cloned().collect()
+    };
+    assert_eq!(keys(&json), keys(&atlas));
+    assert_eq!(
+        keys(&json["tiles"]["grass"]),
+        keys(&atlas["tiles"]["single"])
+    );
+
+    // `check` and `render`: the tiles are stills, not unused symbols, and
+    // the one colour nothing names is still reported.
+    for command in ["check", "render"] {
+        let (code, text, err) = run(&[command, path]);
+        assert_eq!(code, Some(0), "{err}");
+        assert!(text.contains("stills (3;"), "{text}");
+        assert!(text.contains("grass x 0..8, y 0..8"), "{text}");
+        assert!(!text.contains("defined but never used"), "{text}");
+        assert!(!text.contains("is empty"), "{text}");
+        assert_eq!(text.matches("is never used").count(), 1, "{text}");
+        assert!(
+            text.contains("palette colour \"spare\" is never used"),
+            "{text}"
+        );
+    }
+
+    // Stills don't move.
+    let (code, _, err) = run(&["export", path, "--gif"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("stills don't move"), "{err}");
+    // Nothing to export at all still says so, and what export is for.
+    let (code, _, err) = run(&["export", single.to_str().unwrap()]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("no animations and no symbols"), "{err}");
+    let _ = std::fs::remove_dir_all(out);
+}
+
+#[test]
+fn a_stills_list_chooses_places_and_renames_the_tiles() {
+    let out = folder("stills-list");
+    std::fs::create_dir_all(&out).unwrap();
+    let script = out.join("set.json");
+    // "leaf" is a helper; the block is exported twice, once recoloured.
+    std::fs::write(
+        &script,
+        r##"{ "palette": { "green": "#3A8A2A", "red": "#C03020", "ink": "#202020" },
+          "stills": [ "block", { "name": "block", "as": "block_red", "colors": { "green": "red" } },
+                      { "name": "leaf", "translate": [2, 2] } ],
+          "commands": [
+            { "cmd": "canvas", "width": 8, "height": 8, "pixel": true },
+            { "cmd": "define", "name": "leaf", "commands": [
+              { "cmd": "rect", "x": 0, "y": 0, "width": 2, "height": 2, "fill": "ink" } ] },
+            { "cmd": "define", "name": "helper", "commands": [
+              { "cmd": "rect", "x": 0, "y": 0, "width": 1, "height": 1, "fill": "ink" } ] },
+            { "cmd": "define", "name": "block", "commands": [
+              { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "green" },
+              { "cmd": "use", "name": "helper", "translate": [7, 7] } ] }
+          ] }"##,
+    )
+    .unwrap();
+    let sheets = out.join("out");
+    let output = quill()
+        .args([
+            "export",
+            script.to_str().unwrap(),
+            "--columns",
+            "3",
+            "--padding",
+            "1",
+            "--out",
+        ])
+        .arg(&sheets)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sheets.join("set.json")).unwrap()).unwrap();
+    let names: Vec<&String> = json["tiles"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        names,
+        ["block", "block_red", "leaf"],
+        "the helper isn't a tile"
+    );
+    assert_eq!(json["padding"], 1);
+    let sheet = quill_engine::image::Image::load(&sheets.join("set.png")).unwrap();
+    assert_eq!((sheet.width(), sheet.height()), (28, 10));
+    assert_eq!(sheet.pixel(1, 1), [0x3A, 0x8A, 0x2A, 255]);
+    assert_eq!(sheet.pixel(10, 1), [0xC0, 0x30, 0x20, 255], "recoloured");
+    assert_eq!(
+        sheet.pixel(19, 1)[3],
+        0,
+        "the leaf was moved 2 right and down"
+    );
+    assert_eq!(sheet.pixel(21, 3), [0x20, 0x20, 0x20, 255]);
+    // A still that names no symbol is caught when the script is read.
+    std::fs::write(
+        &script,
+        r##"{ "stills": ["nope"], "commands": [ { "cmd": "canvas", "width": 8, "height": 8 },
+            { "cmd": "define", "name": "block", "commands": [] } ] }"##,
+    )
+    .unwrap();
+    let output = quill()
+        .args(["check", script.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("no symbol is called \"nope\" (defined: block)"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(out);
+}
+
+/// On a pixel canvas `check` lost which commands painted each layer
+/// (shrinking the picture gave its layers new numbers), so it could
+/// also call a painted layer "empty in every frame". Found in phase 6.
+#[test]
+fn check_says_which_commands_painted_a_pixel_canvas_layer() {
+    let out = folder("pixel-layers");
+    std::fs::create_dir_all(&out).unwrap();
+    let script = out.join("p.json");
+    std::fs::write(
+        &script,
+        r##"{ "palette": { "a": "#102030" }, "commands": [
+            { "cmd": "canvas", "width": 8, "height": 8, "pixel": true },
+            { "cmd": "layer", "name": "Back" },
+            { "cmd": "rect", "x": 0, "y": 0, "width": 8, "height": 8, "fill": "a" },
+            { "cmd": "layer", "name": "Front" },
+            { "cmd": "rect", "x": 2, "y": 2, "width": 2, "height": 2, "fill": "a" } ] }"##,
+    )
+    .unwrap();
+    let output = quill()
+        .args(["check", script.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Back: x 0..8, y 0..8 (command 3)"), "{text}");
+    assert!(text.contains("Front: x 2..4, y 2..4 (command 5)"), "{text}");
+    let _ = std::fs::remove_dir_all(out);
+}
