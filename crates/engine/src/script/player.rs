@@ -32,8 +32,9 @@ use super::geometry::{self, Pt};
 use super::{
     BrushCmd, Command, DynamicsCmd, EllipseCmd, FillCmd, FilterCmd, GradientCmd, GroupCmd,
     HatchCmd, IncludeCmd, LayerCmd, LineCmd, MoveLayerCmd, PathCmd, PixelsCmd, Point, PolygonCmd,
-    RectCmd, RepeatCmd, ScatterCmd, Script, ScriptError, SelectCmd, StampCmd, StrokeCmd,
-    SymmetryCmd, TextCmd, TransformLayerCmd, UseCmd, parse_hex,
+    RectCmd, Region, RegionCmd, RepeatCmd, ScatterCmd, Script, ScriptError, SelectCmd, SkinBox,
+    SkinBoxCmd, SpeckleCmd, StampCmd, StrokeCmd, SymmetryCmd, TextCmd, TransformLayerCmd, UseCmd,
+    parse_hex,
 };
 use crate::brush::{BrushMode, BrushSettings, Dynamics, MAX_SIZE, Tip, TipShape};
 use crate::document::{Background, Document, MAX_CANVAS_SIDE};
@@ -140,6 +141,10 @@ pub struct Report {
     /// something has paint, and that paint on its own; in the order the
     /// parts finished.
     pub silhouettes: Vec<Silhouette>,
+    /// The named rectangles the script declared (`region`, and the six
+    /// faces of each `skin_box`), in the order declared, and the boxes.
+    pub regions: Vec<Region>,
+    pub skin_boxes: Vec<SkinBox>,
 }
 
 /// A named part's own paint, kept by [`PlayOptions::silhouettes`].
@@ -653,6 +658,9 @@ pub struct Player {
     /// symbol among them is used by the script, whether or not the frame
     /// being painted reaches it.
     named: HashSet<String>,
+    /// The regions and skin boxes declared so far, in canvas pixels.
+    regions: Vec<Region>,
+    skin_boxes: Vec<SkinBox>,
 }
 
 /// Every string the commands of `script` (and of all its animations)
@@ -835,6 +843,8 @@ impl Player {
             clip_cache: None,
             included_colors: HashMap::new(),
             named,
+            regions: Vec::new(),
+            skin_boxes: Vec::new(),
         })
     }
 
@@ -1779,6 +1789,8 @@ impl Player {
                 )
                 .cloned()
                 .collect(),
+            regions: self.regions.clone(),
+            skin_boxes: self.skin_boxes.clone(),
             palette: self
                 .palette
                 .keys()
@@ -2362,6 +2374,9 @@ impl Player {
             Command::Scatter(scatter) => self.scatter(document, scatter),
             Command::Text(text) => self.text(document, text),
             Command::Pixels(pixels) => self.pixels(document, pixels),
+            Command::Speckle(speckle) => self.speckle(document, speckle),
+            Command::Region(region) => self.region(document, region),
+            Command::SkinBox(skin_box) => self.skin_box(document, skin_box),
             Command::Snapshot(snapshot) => {
                 self.painted = None; // the snapshot already shows that layer
                 self.events
@@ -4040,6 +4055,238 @@ impl Player {
         Ok(())
     }
 
+    /// `speckle`: every pixel of a rectangle in one of the colours,
+    /// chosen by weight; with `clump`, in blobs. Whole numbers only, so
+    /// the same seed gives the same pixels on every computer, and the
+    /// pattern wraps round the rectangle's edges (a tile repeats without
+    /// a seam). Runs of one colour become one rectangle each.
+    fn speckle(&mut self, document: &Document, command: &SpeckleCmd) -> Result<(), String> {
+        // Where: a region (canvas pixels, wherever this command is), a
+        // rect (in drawing units, placed like any shape), or everything.
+        let (left, top, width, height, placed) = match (&command.region, command.rect) {
+            (Some(_), Some(_)) => {
+                return Err("give `rect` or `region`, not both".into());
+            }
+            (Some(name), None) => {
+                let region = self.region_named(name)?;
+                (region.x, region.y, region.width, region.height, false)
+            }
+            (None, Some(rect)) => {
+                let [x, y, w, h] = whole_rect(rect)?;
+                (x, y, w as u32, h as u32, true)
+            }
+            (None, None) => {
+                let scale = self.paint_scale;
+                let side = |pixels: u32| ((pixels as f32 / scale).round() as u32).max(1);
+                (0, 0, side(document.width()), side(document.height()), false)
+            }
+        };
+        if u64::from(width) * u64::from(height) > 1 << 20 {
+            return Err(format!(
+                "{width} x {height} is too big to speckle pixel by pixel (at most about a \
+                 million pixels): speckle a tile and repeat it, or use a `noise` fill"
+            ));
+        }
+        // The colours and their weights, in the order of their names.
+        if command.colors.is_empty() {
+            return Err(
+                "`colors` needs at least one colour with its weight, like {\"grass\": 3}".into(),
+            );
+        }
+        let mut choices: Vec<(Rgba, u64)> = Vec::with_capacity(command.colors.len());
+        let mut total: u64 = 0;
+        for (name, &weight) in &command.colors {
+            total += u64::from(weight);
+            choices.push((self.color(name)?, total));
+        }
+        if total == 0 {
+            return Err("every weight in `colors` is 0: give at least one colour a weight".into());
+        }
+        let clump = match command.clump {
+            None => 1,
+            Some(clump) if (1..=64).contains(&clump) => clump,
+            Some(other) => {
+                return Err(format!(
+                    "`clump` is how many pixels across a blob is, 1 to 64: not {other}"
+                ));
+            }
+        };
+        let seed = self.seed_of(command.seed.as_ref())?;
+        let base = Random::mix(self.seed, seed.unwrap_or(self.current_seed));
+        let chosen = speckle_pattern(width, height, clump, base, total);
+
+        let layer = document.active_id();
+        let opacity = self.frame().opacity;
+        let scale = self.paint_scale;
+        for row in 0..height {
+            let mut column = 0;
+            while column < width {
+                let pick = chosen[(row * width + column) as usize];
+                let start = column;
+                while column < width && chosen[(row * width + column) as usize] == pick {
+                    column += 1;
+                }
+                let color = choices
+                    .iter()
+                    .find(|(_, up_to)| pick < *up_to)
+                    .map_or(choices[0].0, |(color, _)| *color);
+                let (x0, y0) = ((left + start as i32) as f32, (top + row as i32) as f32);
+                let (x1, y1) = ((left + column as i32) as f32, y0 + 1.0);
+                let ring = vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+                let ring = if placed {
+                    self.place_polygon(ring)
+                } else {
+                    // Canvas pixels, whatever group this is in.
+                    ring.into_iter()
+                        .map(|(x, y)| (x * scale, y * scale))
+                        .collect()
+                };
+                self.jobs.push_back(Job::Area {
+                    layer,
+                    shape: Some(Shape::Rings(vec![ring])),
+                    paint: Paint::Color(color),
+                    opacity,
+                    mode: BrushMode::Paint,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// `region`: remembers a named rectangle of the canvas. A region
+    /// declared inside a group or symbol is where that puts it.
+    fn region(&mut self, document: &Document, command: &RegionCmd) -> Result<(), String> {
+        let [x, y, w, h] = command.rect;
+        if !(w > 0.0 && h > 0.0) || ![x, y, w, h].iter().all(|v| v.is_finite()) {
+            return Err("`rect` is [x, y, width, height], with a width and height above 0".into());
+        }
+        let region = self.canvas_region(&command.name, x, y, w, h)?;
+        self.declare_region(document, region)
+    }
+
+    /// `skin_box`: the six faces of an unwrapped box, as regions.
+    fn skin_box(&mut self, document: &Document, command: &SkinBoxCmd) -> Result<(), String> {
+        let whole = |v: f32| v.is_finite() && v.fract() == 0.0;
+        let [w, h, d] = command.size;
+        if ![w, h, d]
+            .iter()
+            .all(|v| whole(*v) && *v >= 1.0 && *v <= 4096.0)
+        {
+            return Err(
+                "`size` is the box's [width, height, depth] in whole pixels, each 1 or more".into(),
+            );
+        }
+        if command.name.is_empty() || command.name.contains('.') {
+            return Err("a skin box's `name` is a word without dots, like \"head\"".into());
+        }
+        if self.skin_boxes.iter().any(|b| b.name == command.name) {
+            return Err(format!(
+                "there's already a skin box called \"{}\"",
+                command.name
+            ));
+        }
+        // Where the unwrapped shape's corner lands on the canvas.
+        let corner = self.canvas_region(&command.name, command.at[0], command.at[1], 1.0, 1.0)?;
+        let skin_box = SkinBox {
+            name: command.name.clone(),
+            at: [corner.x, corner.y],
+            size: [w as u32, h as u32, d as u32],
+        };
+        for face in skin_box.faces() {
+            self.declare_region(document, face)?;
+        }
+        self.skin_boxes.push(skin_box);
+        Ok(())
+    }
+
+    /// A rectangle given in drawing units, as a region in whole canvas
+    /// pixels (the box around it, if a group turned it).
+    fn canvas_region(&self, name: &str, x: f32, y: f32, w: f32, h: f32) -> Result<Region, String> {
+        if name.is_empty() {
+            return Err("a region needs a `name`".into());
+        }
+        let corners = self.place_polygon(vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)]);
+        let scale = self.paint_scale;
+        let xs = corners.iter().map(|p| p.0 / scale);
+        let ys = corners.iter().map(|p| p.1 / scale);
+        let (left, right) = (
+            xs.clone().fold(f32::INFINITY, f32::min).round() as i32,
+            xs.fold(f32::NEG_INFINITY, f32::max).round() as i32,
+        );
+        let (top, bottom) = (
+            ys.clone().fold(f32::INFINITY, f32::min).round() as i32,
+            ys.fold(f32::NEG_INFINITY, f32::max).round() as i32,
+        );
+        Ok(Region {
+            name: name.to_owned(),
+            x: left,
+            y: top,
+            width: (right - left).max(1) as u32,
+            height: (bottom - top).max(1) as u32,
+        })
+    }
+
+    /// Adds a region, warning if it leaves the canvas or lies over one
+    /// declared before.
+    fn declare_region(&mut self, document: &Document, region: Region) -> Result<(), String> {
+        if self.regions.iter().any(|r| r.name == region.name) {
+            return Err(format!(
+                "there's already a region called \"{}\"",
+                region.name
+            ));
+        }
+        let scale = self.paint_scale;
+        let canvas = (
+            (document.width() as f32 / scale).round() as i32,
+            (document.height() as f32 / scale).round() as i32,
+        );
+        let (right, bottom) = (
+            region.x + region.width as i32,
+            region.y + region.height as i32,
+        );
+        if region.x < 0 || region.y < 0 || right > canvas.0 || bottom > canvas.1 {
+            self.warnings.push(format!(
+                "region \"{}\" (x {}..{right}, y {}..{bottom}) goes outside the {} x {} canvas",
+                region.name, region.x, region.y, canvas.0, canvas.1
+            ));
+        }
+        if let Some(other) = self.regions.iter().find(|other| {
+            region.x < other.x + other.width as i32
+                && other.x < right
+                && region.y < other.y + other.height as i32
+                && other.y < bottom
+        }) {
+            self.warnings.push(format!(
+                "region \"{}\" (x {}..{right}, y {}..{bottom}) lies over region \"{}\"",
+                region.name, region.x, region.y, other.name
+            ));
+        }
+        self.regions.push(region);
+        Ok(())
+    }
+
+    /// The region called `name`, declared earlier in the script.
+    fn region_named(&self, name: &str) -> Result<Region, String> {
+        self.regions
+            .iter()
+            .find(|region| region.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                let names: Vec<&str> = self.regions.iter().map(|r| r.name.as_str()).collect();
+                if names.is_empty() {
+                    format!(
+                        "there's no region called \"{name}\": declare it first with a `region` \
+                         or `skin_box` command"
+                    )
+                } else {
+                    format!(
+                        "there's no region called \"{name}\" (declared so far: {})",
+                        names.join(", ")
+                    )
+                }
+            })
+    }
+
     /// `text` with "{i}" replaced by the copy number of the `repeat` it's
     /// in (1, 2, 3...) and "{i0}" by the same counted from 0 (0, 1, 2...).
     /// The innermost `repeat` counts, even from inside a group or symbol.
@@ -4736,13 +4983,32 @@ impl Player {
     }
 
     /// An area: {"rect": [x, y, w, h]}, {"ellipse": [cx, cy, rx, ry]},
-    /// {"circle": [cx, cy, r]} or {"polygon": [[x, y], ...]}, as a polygon
-    /// in drawing units.
+    /// {"circle": [cx, cy, r]}, {"polygon": [[x, y], ...]} or
+    /// {"region": "name"}, as a polygon in drawing units.
     fn area(&self, value: &Value) -> Result<Vec<Pt>, String> {
         let help = "an area is {\"rect\": [x, y, width, height]}, {\"ellipse\": [cx, cy, rx, ry]}, \
-                    {\"circle\": [cx, cy, r]} or {\"polygon\": [[x, y], ...]}";
+                    {\"circle\": [cx, cy, r]}, {\"polygon\": [[x, y], ...]} or {\"region\": \
+                    \"name\"}";
         let object = value.as_object().filter(|o| o.len() == 1).ok_or(help)?;
         let (kind, numbers) = object.iter().next().ok_or(help)?;
+        if kind == "region" {
+            // A declared region is a rectangle of the canvas, wherever
+            // this command is: undo the placement the shape gets later.
+            let region = self.region_named(numbers.as_str().ok_or(help)?)?;
+            let back = self.frame().place.inverse().ok_or(
+                "a region can't be used as an area inside a group that's scaled to nothing",
+            )?;
+            let scale = self.paint_scale;
+            let (x0, y0) = (region.x as f32 * scale, region.y as f32 * scale);
+            let (x1, y1) = (
+                x0 + region.width as f32 * scale,
+                y0 + region.height as f32 * scale,
+            );
+            return Ok([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                .into_iter()
+                .map(|p| back.apply(p))
+                .collect());
+        }
         let flat = |n: usize| -> Result<Vec<f32>, String> {
             let list = numbers.as_array().filter(|l| l.len() == n).ok_or(help)?;
             list.iter()
@@ -5266,6 +5532,89 @@ fn read_png(path: &std::path::Path) -> Result<(usize, usize, usize, Vec<u8>), St
     Ok((width, height, channels, buffer))
 }
 
+/// `[x, y, width, height]` as whole numbers, or what's wrong with it.
+fn whole_rect(rect: [f32; 4]) -> Result<[i32; 4], String> {
+    let whole = |v: f32| v.is_finite() && v.fract() == 0.0 && v.abs() < 1.0e7;
+    if !rect.iter().all(|v| whole(*v)) || rect[2] < 1.0 || rect[3] < 1.0 {
+        return Err(
+            "`rect` is [x, y, width, height] in whole pixels, with a width and height of 1 or \
+             more"
+                .into(),
+        );
+    }
+    Ok(rect.map(|v| v as i32))
+}
+
+/// The speckle pattern for a `width` x `height` rectangle: for each
+/// pixel, row by row, a number from 0 up to (not including) `total`,
+/// which picks its colour by weight.
+///
+/// With `clump` 1 every pixel draws its own number. With a bigger
+/// `clump` the rectangle is covered by cells that many pixels across,
+/// each with one point somewhere inside it and one number; a pixel takes
+/// the number of the nearest point, measuring round the edges (so the
+/// left edge continues the right, and the top the bottom). Everything is
+/// whole-number arithmetic on the script's own generator: no rounding
+/// that could differ between computers.
+pub(crate) fn speckle_pattern(
+    width: u32,
+    height: u32,
+    clump: u32,
+    seed: u64,
+    total: u64,
+) -> Vec<u64> {
+    let (w, h) = (i64::from(width), i64::from(height));
+    let mut chosen = Vec::with_capacity((w * h) as usize);
+    if clump <= 1 {
+        for y in 0..h {
+            for x in 0..w {
+                let hash = Random::mix(seed, ((x as u64) << 32) | y as u64);
+                chosen.push(hash % total);
+            }
+        }
+        return chosen;
+    }
+    let c = i64::from(clump);
+    let (columns, rows) = ((w + c - 1) / c, (h + c - 1) / c);
+    // Each cell's point (inside the rectangle) and number.
+    let mut cells = Vec::with_capacity((columns * rows) as usize);
+    for j in 0..rows {
+        for i in 0..columns {
+            let mut random = Random::new(Random::mix(seed, ((i as u64) << 32) | j as u64));
+            let x = (i * c + (random.next_u64() % c as u64) as i64) % w;
+            let y = (j * c + (random.next_u64() % c as u64) as i64) % h;
+            cells.push((x, y, random.next_u64() % total));
+        }
+    }
+    // The distance from a to b going round, whichever way is shorter.
+    let round = |a: i64, b: i64, size: i64| {
+        let d = (a - b).abs();
+        d.min(size - d)
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let (ci, cj) = (x / c, y / c);
+            let mut best = (i64::MAX, 0);
+            for dj in -1..=1 {
+                for di in -1..=1 {
+                    let i = (ci + di).rem_euclid(columns);
+                    let j = (cj + dj).rem_euclid(rows);
+                    let (px, py, number) = cells[(j * columns + i) as usize];
+                    let (dx, dy) = (round(x, px, w), round(y, py, h));
+                    let distance = dx * dx + dy * dy;
+                    // The first of equally near points wins, always in
+                    // this order.
+                    if distance < best.0 {
+                        best = (distance, number);
+                    }
+                }
+            }
+            chosen.push(best.1);
+        }
+    }
+    chosen
+}
+
 /// True for the commands that matter while a symbol is painted for a
 /// mask: those that paint, and those that hold other commands.
 fn paints_or_structures(command: &Command) -> bool {
@@ -5280,6 +5629,8 @@ fn paints_or_structures(command: &Command) -> bool {
             | Command::ClearLayer(_)
             | Command::TransformLayer(_)
             | Command::Pixels(_)
+            | Command::Region(_)
+            | Command::SkinBox(_)
             | Command::Snapshot(_)
             | Command::Filter(_)
     )
@@ -7369,6 +7720,298 @@ mod tests {
         assert!(mixed.contains("same number of characters"), "{mixed}");
         let dots = problem(r#"{ "..": "red" }"#, r#"[".."]"#);
         assert!(dots.contains("not \"..\""), "{dots}");
+    }
+
+    // ---- Speckle, regions and skin boxes (phase 6) ------------------------------
+
+    #[test]
+    fn speckle_numbers_are_the_same_on_every_computer() {
+        // If these change, every speckled tile changes. They're made
+        // with whole numbers only, so no machine may disagree.
+        assert_eq!(
+            super::speckle_pattern(8, 2, 1, 7, 10),
+            [6, 0, 1, 5, 2, 0, 1, 5, 5, 0, 8, 9, 5, 1, 9, 7]
+        );
+        assert_eq!(
+            super::speckle_pattern(8, 4, 3, 7, 10),
+            [
+                8, 8, 7, 8, 8, 8, 3, 9, 9, 8, 7, 8, 8, 3, 3, 9, 9, 7, 7, 7, 4, 4, 3, 9, 8, 7, 7, 7,
+                8, 4, 4, 8
+            ]
+        );
+    }
+
+    #[test]
+    fn speckle_chooses_by_weight() {
+        // Weights 6, 3 and 1 out of 10: about 60%, 30% and 10% of 4096 pixels.
+        let pattern = super::speckle_pattern(64, 64, 1, 3, 10);
+        let share = |from: u64, to: u64| {
+            pattern.iter().filter(|n| (from..to).contains(*n)).count() as f32 / 4096.0
+        };
+        assert!((share(0, 6) - 0.6).abs() < 0.04, "{}", share(0, 6));
+        assert!((share(6, 9) - 0.3).abs() < 0.04, "{}", share(6, 9));
+        assert!((share(9, 10) - 0.1).abs() < 0.03, "{}", share(9, 10));
+    }
+
+    #[test]
+    fn speckle_clumps_into_blobs_that_wrap_round_the_edges() {
+        let (w, h) = (64u32, 64u32);
+        // How often two neighbours are the same: inside the picture, and
+        // across its edges (the last column beside the first, the last
+        // row above the first).
+        let rates = |pattern: &[u64]| {
+            let at = |x: u32, y: u32| pattern[(y * w + x) as usize];
+            let (mut inside, mut inside_same, mut seam, mut seam_same) = (0, 0, 0, 0);
+            for y in 0..h {
+                for x in 0..w {
+                    let (right, down) = (at((x + 1) % w, y), at(x, (y + 1) % h));
+                    for (other, on_seam) in [(right, x == w - 1), (down, y == h - 1)] {
+                        let same = u32::from(at(x, y) == other);
+                        if on_seam {
+                            seam += 1;
+                            seam_same += same;
+                        } else {
+                            inside += 1;
+                            inside_same += same;
+                        }
+                    }
+                }
+            }
+            (
+                inside_same as f32 / inside as f32,
+                seam_same as f32 / seam as f32,
+            )
+        };
+        let (plain, _) = rates(&super::speckle_pattern(w, h, 1, 5, 4));
+        let (inside, seam) = rates(&super::speckle_pattern(w, h, 4, 5, 4));
+        assert!(
+            plain < 0.35,
+            "single pixels rarely match a neighbour: {plain}"
+        );
+        assert!(inside > 0.65, "blobs mostly do: {inside}");
+        // Without wrapping, pixels across an edge would match as rarely
+        // as in the plain pattern.
+        assert!(
+            seam > inside - 0.12,
+            "blobs carry on across the edges: {seam} against {inside} inside"
+        );
+        // A size the clump doesn't divide wraps too.
+        let (w, h) = (50u32, 30u32);
+        let pattern = super::speckle_pattern(w, h, 4, 9, 4);
+        let at = |x: u32, y: u32| pattern[(y * w + x) as usize];
+        let across = (0..h).filter(|&y| at(w - 1, y) == at(0, y)).count() as f32 / h as f32;
+        let down = (0..w).filter(|&x| at(x, h - 1) == at(x, 0)).count() as f32 / w as f32;
+        assert!(across > 0.5 && down > 0.5, "{across} {down}");
+    }
+
+    #[test]
+    fn speckle_paints_whole_palette_pixels_and_the_same_ones_for_the_same_seed() {
+        let script = |extra: &str| {
+            pixel_script(
+                r#"{ "supersample": 4 }"#,
+                &format!(
+                    r##"{{ "cmd": "speckle", "colors": {{ "red": 3, "blue": 1, "ink": 1 }}{extra} }}"##
+                ),
+            )
+        };
+        let grid = pixel_grid(&play(&script(r#", "seed": 7"#)));
+        let palette = [
+            [0x20, 0x20, 0x20, 255],
+            [0xE0, 0x20, 0x20, 255],
+            [0x20, 0x20, 0xE0, 255],
+        ];
+        assert_eq!(grid.len(), 16);
+        for row in &grid {
+            for pixel in row {
+                assert!(
+                    palette.contains(pixel),
+                    "a palette colour, opaque: {pixel:?}"
+                );
+            }
+        }
+        let count = |color: [u8; 4]| grid.iter().flatten().filter(|p| **p == color).count();
+        assert!(
+            count(palette[1]) > count(palette[2]),
+            "red has three times blue's weight"
+        );
+        assert!(count(palette[0]) > 20 && count(palette[2]) > 20);
+        assert_eq!(
+            grid,
+            pixel_grid(&play(&script(r#", "seed": 7"#))),
+            "same seed"
+        );
+        assert_ne!(
+            grid,
+            pixel_grid(&play(&script(r#", "seed": 8"#))),
+            "another seed"
+        );
+        // Without a seed it's still the same every time (the script's own).
+        assert_eq!(
+            pixel_grid(&play(&script(""))),
+            pixel_grid(&play(&script("")))
+        );
+        // A rect is filled and nothing else; in a group it moves with it.
+        let part = pixel_grid(&play(&pixel_script(
+            "true",
+            r##"{ "cmd": "group", "translate": [4, 2], "commands": [
+                { "cmd": "speckle", "rect": [1, 1, 3, 2], "colors": { "red": 1 } } ] }"##,
+        )));
+        let painted: Vec<(usize, usize)> = (0..16)
+            .flat_map(|y| (0..16).map(move |x| (x, y)))
+            .filter(|&(x, y)| part[y][x][3] != 0)
+            .collect();
+        assert_eq!(painted, [(5, 3), (6, 3), (7, 3), (5, 4), (6, 4), (7, 4)]);
+    }
+
+    #[test]
+    fn speckle_mistakes_are_explained() {
+        let problem = |fields: &str| {
+            error(&pixel_script(
+                "true",
+                &format!(r##"{{ "cmd": "speckle", {fields} }}"##),
+            ))
+        };
+        assert!(problem(r#""colors": {}"#).contains("at least one colour"));
+        assert!(problem(r#""colors": { "red": 0 }"#).contains("every weight"));
+        assert!(problem(r#""colors": { "red": 1 }, "clump": 0"#).contains("1 to 64"));
+        assert!(
+            problem(r#""colors": { "red": 1 }, "rect": [0, 0, 2.5, 2]"#).contains("whole pixels")
+        );
+        assert!(problem(r#""colors": { "pink": 1 }"#).contains("unknown colour \"pink\""));
+        assert!(
+            problem(r#""colors": { "red": 1 }, "region": "lid""#)
+                .contains("no region called \"lid\"")
+        );
+        assert!(
+            problem(r#""colors": { "red": 1 }, "region": "lid", "rect": [0, 0, 1, 1]"#)
+                .contains("not both")
+        );
+    }
+
+    #[test]
+    fn a_skin_box_unwraps_the_minecraft_way_into_six_named_regions() {
+        let report = report_of(
+            r##"{ "palette": { "skin": "#C68642" }, "commands": [
+                { "cmd": "canvas", "width": 64, "height": 64, "pixel": true },
+                { "cmd": "skin_box", "name": "head", "at": [0, 0], "size": [8, 8, 8] },
+                { "cmd": "skin_box", "name": "body", "at": [16, 16], "size": [8, 12, 4] },
+                { "cmd": "region", "name": "icon", "rect": [56, 56, 8, 8] } ] }"##,
+        );
+        let places: Vec<(String, i32, i32, u32, u32)> = report
+            .regions
+            .iter()
+            .map(|r| (r.name.clone(), r.x, r.y, r.width, r.height))
+            .collect();
+        let expected = [
+            // The head of a real Minecraft skin.
+            ("head.top", 8, 0, 8, 8),
+            ("head.bottom", 16, 0, 8, 8),
+            ("head.right", 0, 8, 8, 8),
+            ("head.front", 8, 8, 8, 8),
+            ("head.left", 16, 8, 8, 8),
+            ("head.back", 24, 8, 8, 8),
+            // Its body: 8 wide, 12 high, 4 deep.
+            ("body.top", 20, 16, 8, 4),
+            ("body.bottom", 28, 16, 8, 4),
+            ("body.right", 16, 20, 4, 12),
+            ("body.front", 20, 20, 8, 12),
+            ("body.left", 28, 20, 4, 12),
+            ("body.back", 32, 20, 8, 12),
+            ("icon", 56, 56, 8, 8),
+        ];
+        assert_eq!(places.len(), expected.len());
+        for (found, wanted) in places.iter().zip(expected) {
+            assert_eq!(
+                (found.0.as_str(), found.1, found.2, found.3, found.4),
+                wanted
+            );
+        }
+        assert_eq!(report.skin_boxes.len(), 2);
+        assert_eq!(report.skin_boxes[1].at, [16, 16]);
+        assert_eq!(report.skin_boxes[1].size, [8, 12, 4]);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn regions_paint_nothing_and_can_be_filled_by_name() {
+        let script = |commands: &str| {
+            format!(
+                r##"{{ "palette": {{ "ink": "#202020", "red": "#E02020" }}, "commands": [
+                    {{ "cmd": "canvas", "width": 32, "height": 16, "pixel": {{ "supersample": 2 }} }},
+                    {{ "cmd": "skin_box", "name": "arm", "at": [4, 2], "size": [2, 6, 2] }},
+                    {commands} ] }}"##
+            )
+        };
+        let empty = play(&script(
+            r#"{ "cmd": "region", "name": "spare", "rect": [20, 0, 4, 4] }"#,
+        ));
+        assert!(empty.active_layer().surface.painted_area().is_none());
+        // Speckle a face by name, from inside a group that's moved: the
+        // region is a place on the canvas, so it lands on the face.
+        let filled = play(&script(
+            r##"{ "cmd": "group", "translate": [9, 9], "commands": [
+                { "cmd": "speckle", "region": "arm.front", "colors": { "red": 1 } },
+                { "cmd": "gradient", "area": { "region": "arm.top" }, "from": [0, 0], "to": [0, 1],
+                  "colors": ["ink", "ink"] } ] }"##,
+        ));
+        let grid = pixel_grid(&filled);
+        let painted = |color: [u8; 4]| -> Vec<(usize, usize)> {
+            (0..16)
+                .flat_map(|y| (0..32).map(move |x| (x, y)))
+                .filter(|&(x, y)| grid[y][x] == color)
+                .collect()
+        };
+        // arm.front is at x 6..8, y 4..10; arm.top at x 6..8, y 2..4.
+        let red = painted([0xE0, 0x20, 0x20, 255]);
+        assert_eq!(red.len(), 12);
+        assert!(
+            red.iter()
+                .all(|&(x, y)| (6..8).contains(&x) && (4..10).contains(&y))
+        );
+        let ink = painted([0x20, 0x20, 0x20, 255]);
+        assert_eq!(ink, [(6, 2), (7, 2), (6, 3), (7, 3)]);
+    }
+
+    #[test]
+    fn region_mistakes_are_warned_about_or_refused() {
+        let script = |commands: &str| {
+            format!(
+                r##"{{ "commands": [ {{ "cmd": "canvas", "width": 32, "height": 16 }}, {commands} ] }}"##
+            )
+        };
+        let report = report_of(&script(
+            r##"{ "cmd": "region", "name": "a", "rect": [0, 0, 8, 8] },
+                { "cmd": "region", "name": "b", "rect": [4, 4, 8, 8] },
+                { "cmd": "region", "name": "c", "rect": [28, 0, 8, 8] }"##,
+        ));
+        assert_eq!(
+            report.warnings,
+            [
+                r#"region "b" (x 4..12, y 4..12) lies over region "a""#,
+                r#"region "c" (x 28..36, y 0..8) goes outside the 32 x 16 canvas"#,
+            ]
+        );
+        // `select` takes a region too: painting then stays inside it.
+        let selected = play(&script(
+            r##"{ "cmd": "region", "name": "a", "rect": [2, 2, 4, 4] },
+                { "cmd": "select", "region": "a" },
+                { "cmd": "rect", "x": 0, "y": 0, "width": 32, "height": 16, "fill": "#FF0000" }"##,
+        ));
+        let area = selected.active_layer().surface.painted_area().unwrap();
+        assert_eq!((area.left, area.top, area.right, area.bottom), (2, 2, 6, 6));
+        let twice = error(&script(
+            r##"{ "cmd": "region", "name": "a", "rect": [0, 0, 8, 8] },
+                { "cmd": "region", "name": "a", "rect": [8, 0, 8, 8] }"##,
+        ));
+        assert!(twice.contains("already a region called \"a\""), "{twice}");
+        let dotted = error(&script(
+            r##"{ "cmd": "skin_box", "name": "left.arm", "at": [0, 0], "size": [4, 12, 4] }"##,
+        ));
+        assert!(dotted.contains("without dots"), "{dotted}");
+        let flat = error(&script(
+            r##"{ "cmd": "skin_box", "name": "arm", "at": [0, 0], "size": [4, 12, 0] }"##,
+        ));
+        assert!(flat.contains("each 1 or more"), "{flat}");
     }
 
     #[test]

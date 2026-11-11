@@ -13,10 +13,11 @@ use std::process::Command;
 use quill_engine::document::Background;
 use quill_engine::gif::save_gif;
 use quill_engine::image::{Color, Image, unpremultiply};
-use quill_engine::script::{PlayOptions, Player, Script, Sequence, parse_hex};
+use quill_engine::script::{PlayOptions, Player, Report, Script, Sequence, parse_hex};
 use quill_engine::sprites::{SheetAnimation, sprite_sheet};
 
 use crate::atlas::{Tile, save_tiles};
+use crate::regions::save_regions;
 use crate::{Problem, failed, load};
 
 /// Enlarging more than this makes files nobody wants.
@@ -164,6 +165,9 @@ fn export_stills(options: &ExportOptions, script: &Script, stem: &str) -> Result
     let folder = options.script.parent().map(Path::to_path_buf);
     let mut tiles = Vec::with_capacity(stills.len());
     let mut canvas = (0, 0);
+    // The script's regions (the same for every still: declared by the
+    // script's own commands), from the first one painted.
+    let mut regions: Option<Report> = None;
     for still in &stills {
         let play = PlayOptions {
             folder: folder.clone(),
@@ -176,6 +180,7 @@ fn export_stills(options: &ExportOptions, script: &Script, stem: &str) -> Result
             .run(&mut document, |_, _| {})
             .map_err(|e| named(&e))?;
         canvas = (document.width(), document.height());
+        regions.get_or_insert_with(|| player.report());
         let mut image = Image::of_document(&document, Background::Transparent);
         if options.scale > 1 {
             image = image.magnify(options.scale);
@@ -204,6 +209,19 @@ fn export_stills(options: &ExportOptions, script: &Script, stem: &str) -> Result
             tiles.len(),
             if tiles.len() == 1 { "" } else { "s" }
         ));
+        if let Some(report) = &regions
+            && let Some(path) = save_regions(
+                report,
+                &options.out,
+                stem,
+                &format!("{stem}.png"),
+                sheet.size,
+                options.scale,
+                Some((canvas.0 * options.scale, canvas.1 * options.scale)),
+            )?
+        {
+            saved.push(format!("{} (regions, inside each still)", path.display()));
+        }
     }
     if options.frames {
         std::fs::create_dir_all(&options.out).map_err(|e| {
@@ -293,6 +311,7 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
     let mut paper = [255, 255, 255, 255];
     let mut canvas = (0, 0);
     let mut notes: Vec<String> = Vec::new();
+    let mut regions: Option<Report> = None;
     for (name, animation) in &script.animations {
         if options
             .animation
@@ -312,7 +331,8 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
             },
         );
         for frame in 0..animation.frames {
-            let (document, _) = sequence.paint(frame, |_, _| {}).map_err(|e| problem(&e))?;
+            let (document, report) = sequence.paint(frame, |_, _| {}).map_err(|e| problem(&e))?;
+            regions.get_or_insert(report);
             if frame + 1 == animation.frames
                 && animation.frames > 1
                 && let Some(summary) = sequence.summary(&document)
@@ -380,6 +400,19 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
             painted.len(),
             if painted.len() == 1 { "" } else { "s" }
         ));
+        if let Some(report) = &regions
+            && let Some(path) = save_regions(
+                report,
+                &options.out,
+                &stem,
+                &image_name,
+                (sheet.width(), sheet.height()),
+                scale,
+                Some((canvas.0 * scale, canvas.1 * scale)),
+            )?
+        {
+            saved.push(format!("{} (regions, inside each frame)", path.display()));
+        }
     }
     if options.frames {
         let mut count = 0;

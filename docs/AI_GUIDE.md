@@ -143,6 +143,8 @@ writing more. Then fix the script and render again. Small steps beat one huge sc
 | `params` / `with` / `"$name"` | A symbol's parameters with defaults; a `use` sets them (keyframes allowed); `"upright": true` keeps a foot flat. |
 | `"pixel"` on `canvas` | Pixel art: painted bigger, shrunk to whole pixels in the palette's colours; `{"supersample": 8, "outline": "ink"}`. |
 | `pixels` | Rows of characters, one canvas pixel each: `"rows": ["..kk.."]`, `"colors": {"k": "ink"}`. Over 52 colours: two-character keys (`"k1"`, `".."` see-through). |
+| `speckle` | A rectangle (or the canvas, or a `region`) filled pixel by pixel from `colors` by weight: `{"grass": 6, "grass_dark": 3}`; `clump` for blobs, `seed` for the pattern. Wraps, so a tile is seamless. |
+| `region`, `skin_box` | Name rectangles of the canvas (a box's six faces, the Minecraft way); paint by name, and `render` writes them to `<name>.regions.json` for the game. |
 
 Areas: `{"rect": [x, y, w, h]}`, `{"ellipse": [cx, cy, rx, ry]}`, `{"circle": [cx, cy, r]}`,
 `{"polygon": [[x, y], ...]}`.

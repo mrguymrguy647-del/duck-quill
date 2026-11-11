@@ -222,6 +222,7 @@ impl Request {
             ("ellipse", &command.ellipse),
             ("circle", &command.circle),
             ("polygon", &command.polygon),
+            ("region", &command.region),
         ];
         let mut found: Vec<(&str, What)> = shapes
             .iter()

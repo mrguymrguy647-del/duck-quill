@@ -89,3 +89,43 @@ A script with animations gives its first frame (use `quill export` for all its f
 writes the same two files (`blocks.png`, `blocks.json`) from one script: every symbol it
 `define`s is a tile, named after the symbol, or only those in its `"stills"` list
 (`docs/script-format.md`, "Stills"). The JSON is exactly the one above.
+
+## Regions
+
+A script can name rectangles of its picture (`region`, and `skin_box` for the six faces of an
+unwrapped box: `docs/script-format.md`, "Regions"). When it does, `quill render skin.json`
+writes `skin.regions.json` beside `skin.png`, and `quill export` writes it beside the sheet:
+
+```json
+{
+  "image": "skin.png",
+  "width": 64,
+  "height": 32,
+  "scale": 1,
+  "regions": {
+    "head.top":    { "x": 8,  "y": 0, "width": 8, "height": 8 },
+    "head.bottom": { "x": 16, "y": 0, "width": 8, "height": 8 },
+    "head.right":  { "x": 0,  "y": 8, "width": 8, "height": 8 },
+    "head.front":  { "x": 8,  "y": 8, "width": 8, "height": 8 },
+    "head.left":   { "x": 16, "y": 8, "width": 8, "height": 8 },
+    "head.back":   { "x": 24, "y": 8, "width": 8, "height": 8 },
+    "hat_icon":    { "x": 48, "y": 0, "width": 8, "height": 8 }
+  },
+  "boxes": {
+    "head": { "x": 0, "y": 0, "size": [8, 8, 8],
+              "faces": ["head.top", "head.bottom", "head.right", "head.front", "head.left", "head.back"] }
+  }
+}
+```
+
+| Field | |
+|---|---|
+| `image`, `width`, `height` | The picture the regions are in, and its size in pixels. |
+| `scale` | How many times the picture was enlarged (`--scale`). Every number below is already multiplied by it. |
+| `frame` | Only beside a sheet of frames or stills: one cell's `width` and `height`. The regions are then inside **each** cell, measured from that cell's top-left corner. |
+| `regions` | By name, in the order the script declared them: `x`, `y` (top-left corner, y down), `width`, `height`, in the picture's pixels. |
+| `boxes` | Only if the script has `skin_box`es. By name: `x`, `y` of the unwrapped shape's top-left corner, `size` as `[width, height, depth]`, and `faces`, the names of its six regions in the order top, bottom, right, front, left, back. |
+
+For a box, the texture coordinates of a face are its region divided by the picture's size:
+`u0 = x / width`, `v0 = y / height`, `u1 = (x + region width) / width`,
+`v1 = (y + region height) / height`. "right" and "left" are the character's own right and left.

@@ -28,6 +28,7 @@ mod export;
 mod font;
 mod gallery;
 mod grid;
+mod regions;
 mod sheet;
 mod study;
 mod tile;
@@ -804,6 +805,9 @@ fn render(options: &RenderOptions) -> Result<(), Problem> {
     };
     let zoom = options.zoom as f32;
     let mut saved: Vec<PathBuf> = Vec::new();
+    // The last full-size picture saved, as (file name, width, height):
+    // the one a `.regions.json` describes.
+    let mut full_size: Option<(String, u32, u32)> = None;
     let mut snapshot_count = 0;
     let mut last = None;
     // For --gif and --frame-sheet: every frame's picture, kept in memory.
@@ -990,6 +994,7 @@ fn render(options: &RenderOptions) -> Result<(), Problem> {
                     options.transparent,
                     &mut saved,
                 )?;
+                full_size = Some((format!("{name}.png"), image.width(), image.height()));
                 let image = zoomed(image);
                 if options.zoom > 1 {
                     let path = options.out.join(format!("{name}-zoom{}.png", options.zoom));
@@ -1155,6 +1160,20 @@ fn render(options: &RenderOptions) -> Result<(), Problem> {
                 );
             }
         }
+    }
+    // The script's named regions, beside the picture they're in.
+    if let Some((image, width, height)) = &full_size
+        && let Some(path) = regions::save_regions(
+            &report,
+            &options.out,
+            &stem,
+            image,
+            (*width, *height),
+            1,
+            None,
+        )?
+    {
+        saved.push(path);
     }
     let mut files: Vec<String> = if saved.len() > 4 {
         let folder = options.out.display();
@@ -2157,6 +2176,28 @@ fn check(options: &CheckOptions) -> Result<(), Problem> {
     }
     if !stills.is_empty() {
         say!("  {}", stills_line(&stills));
+    }
+    if !report.regions.is_empty() {
+        // (`render` and `export` write them to <name>.regions.json.)
+        let entries: Vec<String> = report
+            .regions
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} x {}..{}, y {}..{}",
+                    r.name,
+                    r.x,
+                    r.x + r.width as i32,
+                    r.y,
+                    r.y + r.height as i32
+                )
+            })
+            .collect();
+        say!("  regions ({}):", entries.len());
+        let lines = if detail { usize::MAX } else { 8 };
+        for line in packed(&entries, SUMMARY_WIDTH, lines) {
+            say!("    {line}");
+        }
     }
     if !script.animations.is_empty() {
         let list: Vec<String> = script

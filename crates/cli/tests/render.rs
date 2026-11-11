@@ -1876,3 +1876,184 @@ fn check_says_which_commands_painted_a_pixel_canvas_layer() {
     assert!(text.contains("Front: x 2..4, y 2..4 (command 5)"), "{text}");
     let _ = std::fs::remove_dir_all(out);
 }
+
+/// Phase 6, fix 3: grass, dirt and stone without writing every pixel.
+#[test]
+fn a_speckled_tile_is_the_same_every_run_and_repeats_without_a_seam() {
+    let out = folder("speckle");
+    std::fs::create_dir_all(&out).unwrap();
+    let script = out.join("grass.json");
+    std::fs::write(
+        &script,
+        r##"{ "palette": { "grass": "#5B9A3A", "grass_dark": "#467F2C", "grass_light": "#77B552" },
+          "commands": [
+            { "cmd": "canvas", "width": 16, "height": 16, "pixel": true },
+            { "cmd": "speckle", "seed": 7, "clump": 2,
+              "colors": { "grass": 6, "grass_dark": 3, "grass_light": 2 } } ] }"##,
+    )
+    .unwrap();
+    let render = |folder: &str| {
+        let output = quill()
+            .args(["render", script.to_str().unwrap(), "--tile", "--out"])
+            .arg(out.join(folder))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let text = render("a");
+    assert!(
+        text.contains("tile: opposite edges meet, so it repeats without a seam"),
+        "{text}"
+    );
+    assert!(!text.contains("never used"), "{text}");
+    render("b");
+    let (a, b) = (
+        std::fs::read(out.join("a/grass.png")).unwrap(),
+        std::fs::read(out.join("b/grass.png")).unwrap(),
+    );
+    assert_eq!(a, b, "the same seed, the same file");
+    // Every pixel painted, in the three colours, the heaviest most often.
+    let image = quill_engine::image::Image::load(&out.join("a/grass.png")).unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for y in 0..16 {
+        for x in 0..16 {
+            *counts.entry(image.pixel(x, y)).or_insert(0) += 1;
+        }
+    }
+    assert_eq!(counts.len(), 3, "{counts:?}");
+    assert!(counts[&[0x5B, 0x9A, 0x3A, 255]] > counts[&[0x46, 0x7F, 0x2C, 255]]);
+    // The first row, pinned: any machine that paints another fails here.
+    let row: String = (0..16)
+        .map(|x| match image.pixel(x, 0) {
+            [0x5B, ..] => 'g',
+            [0x46, ..] => 'd',
+            _ => 'l',
+        })
+        .collect();
+    assert_eq!(row, FIRST_SPECKLE_ROW, "the first row of the tile");
+    let _ = std::fs::remove_dir_all(out);
+}
+
+/// Phase 6, fix 4: a skin's layout is declared once, in the script, and
+/// written beside the picture for the game.
+#[test]
+fn regions_are_listed_by_check_and_written_beside_the_picture() {
+    let out = folder("regions");
+    std::fs::create_dir_all(&out).unwrap();
+    let script = out.join("skin.json");
+    std::fs::write(
+        &script,
+        r##"{ "palette": { "skin": "#C68642", "hair": "#3B2A1A" },
+          "commands": [
+            { "cmd": "canvas", "width": 64, "height": 32, "pixel": true },
+            { "cmd": "skin_box", "name": "head", "at": [0, 0], "size": [8, 8, 8] },
+            { "cmd": "region", "name": "badge", "rect": [40, 0, 4, 4] },
+            { "cmd": "speckle", "region": "head.front", "colors": { "skin": 1 } },
+            { "cmd": "speckle", "region": "head.top", "colors": { "hair": 1 } } ] }"##,
+    )
+    .unwrap();
+    let path = script.to_str().unwrap();
+    let output = quill().args(["check", path]).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("regions (7):"), "{text}");
+    assert!(text.contains("head.front x 8..16, y 8..16"), "{text}");
+    assert!(text.contains("badge x 40..44, y 0..4"), "{text}");
+    assert!(!text.contains("warnings"), "{text}");
+
+    let rendered = out.join("out");
+    let output = quill()
+        .args(["render", path, "--transparent", "--out"])
+        .arg(&rendered)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("skin.regions.json"));
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(rendered.join("skin.regions.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["image"], "skin.png");
+    assert_eq!(
+        (json["width"].as_u64(), json["height"].as_u64()),
+        (Some(64), Some(32))
+    );
+    let names: Vec<&String> = json["regions"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        names,
+        [
+            "head.top",
+            "head.bottom",
+            "head.right",
+            "head.front",
+            "head.left",
+            "head.back",
+            "badge"
+        ]
+    );
+    assert_eq!(
+        json["regions"]["head.back"],
+        serde_json::json!({ "x": 24, "y": 8, "width": 8, "height": 8 })
+    );
+    assert_eq!(json["boxes"]["head"]["size"], serde_json::json!([8, 8, 8]));
+    assert_eq!(json["boxes"]["head"]["faces"][3], "head.front");
+    // The picture has paint exactly where the two faces are.
+    let image = quill_engine::image::Image::load(&rendered.join("skin.png")).unwrap();
+    assert_eq!(image.pixel(8, 8), [0xC6, 0x86, 0x42, 255]);
+    assert_eq!(image.pixel(15, 7), [0x3B, 0x2A, 0x1A, 255]);
+    assert_eq!(image.pixel(16, 8)[3], 0, "head.left wasn't painted");
+
+    // Enlarged, the regions are in the enlarged picture's pixels. (A
+    // script with no animations exports stills; this one has no symbols,
+    // so give it one.)
+    let tiles = out.join("tiles.json");
+    std::fs::write(
+        &tiles,
+        r##"{ "palette": { "skin": "#C68642" }, "commands": [
+            { "cmd": "canvas", "width": 16, "height": 16, "pixel": true },
+            { "cmd": "region", "name": "top_half", "rect": [0, 0, 16, 8] },
+            { "cmd": "define", "name": "a", "commands": [
+              { "cmd": "speckle", "region": "top_half", "colors": { "skin": 1 } } ] },
+            { "cmd": "define", "name": "b", "commands": [
+              { "cmd": "speckle", "colors": { "skin": 1 } } ] } ] }"##,
+    )
+    .unwrap();
+    let output = quill()
+        .args(["export", tiles.to_str().unwrap(), "--scale", "4", "--out"])
+        .arg(&rendered)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(rendered.join("tiles.regions.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["scale"], 4);
+    assert_eq!(
+        json["frame"],
+        serde_json::json!({ "width": 64, "height": 64 })
+    );
+    assert_eq!(
+        json["regions"]["top_half"],
+        serde_json::json!({ "x": 0, "y": 0, "width": 64, "height": 32 })
+    );
+    // A script without regions writes no such file.
+    let output = quill()
+        .args(["render", example().to_str().unwrap(), "--preview", "--out"])
+        .arg(&rendered)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!rendered.join("sunset.regions.json").exists());
+    let _ = std::fs::remove_dir_all(out);
+}
+
+/// The first row of the speckled grass tile above (g grass, d dark, l light).
+const FIRST_SPECKLE_ROW: &str = "gggggggggddggggg";

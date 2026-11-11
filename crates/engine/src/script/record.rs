@@ -463,6 +463,16 @@ fn for_each_color(command: &mut Command, f: &mut dyn FnMut(&mut String)) {
                 f(color);
             }
         }
+        Command::Speckle(c) => {
+            // The colours are the map's keys: take them out and put
+            // them back under their new names.
+            let colors = std::mem::take(&mut c.colors);
+            for (mut color, weight) in colors {
+                f(&mut color);
+                *c.colors.entry(color).or_insert(0) += weight;
+            }
+        }
+        Command::Region(_) | Command::SkinBox(_) => {}
         Command::Group(c) => {
             for inner in &mut c.commands {
                 for_each_color(inner, f);

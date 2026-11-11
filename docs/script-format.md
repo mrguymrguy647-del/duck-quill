@@ -965,6 +965,30 @@ It works on any canvas (on a big one the "pixels" are canvas pixels too). Single
 rectangles, circles and the paint bucket need nothing new: `rect`, `line`, `ellipse`, `polygon`
 and `fill` already come out crisp on a pixel canvas.
 
+### `speckle` — grass, dirt, stone, leaves
+
+```json
+{ "cmd": "speckle", "seed": 7, "clump": 2, "colors": { "grass": 6, "grass_dark": 3, "grass_light": 2 } }
+{ "cmd": "speckle", "rect": [0, 0, 16, 4], "colors": { "grass": 3, "grass_dark": 1 } }
+```
+
+Fills a rectangle of whole canvas pixels, each pixel in one of the `colors`, chosen by weight
+(above: six `grass` pixels for every three `grass_dark` and two `grass_light`). One colour alone
+is a flat fill.
+
+| Field | |
+|---|---|
+| `colors` | Palette names (or `#RRGGBB` on a canvas that isn't a pixel canvas) with whole-number weights. |
+| `rect` | `[x, y, width, height]` in whole pixels. Left out: the whole canvas. In a group it moves with the group. |
+| `region` | In place of `rect`: the name of a [region](#regions-a-layout-written-once). |
+| `clump` | 1 to 64 (default 1: every pixel on its own). Bigger: pixels gather into blobs about that many pixels across. |
+| `seed` | Which pattern. The same seed paints the same pixels on every computer: only whole numbers are used. Without one, the pattern follows from the script's `seed` and where the command is. |
+
+The pattern **wraps round the rectangle's edges**: a blob that leaves on the right comes back on
+the left. So a tile speckled over its whole canvas repeats without a seam, and
+`quill render tile.json --tile` says so. On a canvas painted big and shrunk (`supersample`) it
+still paints whole final pixels.
+
 ## Stills: tiles and icons from one script
 
 ```json
@@ -998,6 +1022,44 @@ A set of tiles, icons or parts lives in one script as `define`d symbols, sharing
 - `check` and `render` list the stills with their boxes, and count what they use: a symbol that
   is only a still isn't "never used".
 
+## Regions: a layout written once
+
+```json
+{ "cmd": "region", "name": "hat_icon", "rect": [48, 0, 8, 8] }
+{ "cmd": "skin_box", "name": "head", "at": [0, 0], "size": [8, 8, 8] }
+{ "cmd": "speckle", "region": "head.front", "colors": { "skin": 5, "skin_dark": 1 } }
+{ "cmd": "gradient", "area": { "region": "head.top" }, "from": [8, 0], "to": [8, 8], "colors": ["hair", "hair_dark"] }
+```
+
+A region is a named rectangle of the canvas. Declaring one paints nothing. Its use: a texture
+with a layout (a character skin, a block's faces, a sheet of icons) is painted by region name,
+and `render` and `export` write the same regions to `<name>.regions.json` beside the PNG, so
+the game reads the layout instead of repeating it in its own code
+(`docs/sprite-sheet-format.md`, "Regions").
+
+- **`region`**: `name` and `rect` `[x, y, width, height]`.
+- **`skin_box`**: a box `size` `[width, height, depth]` unwrapped the way Minecraft skins are,
+  with the top-left corner of the unwrapped shape at `at`. It declares six regions,
+  `<name>.top`, `.bottom`, `.right`, `.front`, `.left` and `.back`:
+
+  ```
+            depth  width  width
+          +------+------+------+
+    depth |      | top  |bottom|
+          +------+------+------+------+
+   height |right |front | left | back |
+          +------+------+------+------+
+            depth  width  depth  width
+  ```
+
+  The whole shape is `2 × (width + depth)` wide and `depth + height` high. A Minecraft head is
+  `"at": [0, 0], "size": [8, 8, 8]`; the body `"at": [16, 16], "size": [8, 12, 4]`.
+- **Using one:** `"region": "name"` on `speckle`, and `{ "region": "name" }` wherever an
+  [area](#areas) is asked for (`gradient`, `hatch`, `scatter`, a group's `mask`, `select`). A
+  region is a place on the canvas: it's the same rectangle from inside any group.
+- Declare a region before it's used; each name once. `check` lists them, and warns when one
+  leaves the canvas or lies over another.
+
 ## Areas
 
 `gradient`, `hatch` and `scatter` take an `area`, and a group's `mask` can be one:
@@ -1007,6 +1069,7 @@ A set of tiles, icons or parts lives in one script as `define`d symbols, sharing
 { "ellipse": [cx, cy, rx, ry] }
 { "circle": [cx, cy, r] }
 { "polygon": [[x, y], [x, y], [x, y], ...] }
+{ "region": "name" }
 ```
 
 ## Randomness

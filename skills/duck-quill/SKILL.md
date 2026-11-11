@@ -9,7 +9,7 @@ A painting script is a JSON file of commands; `quill` paints it into a PNG and a
 
 ## Setup (once)
 
-From the repository's root: `cargo build --release -p quill_cli` (a few minutes the first time). Then use `target/release/quill` (below `quill`; it isn't on the PATH, so give its full path from elsewhere; `art-cli` still works). Pictures go to `out/` in the folder you run it from (`--out <folder>` on render, views, export, atlas; check and critique only print). `quill <command> --help` lists one command's options. Start from `examples/two-ducks.json`.
+On Linux (x86_64) nothing needs building: `curl -L https://github.com/mrguymrguy647-del/duck-quill/releases/latest/download/quill-linux-x86_64.tar.gz | tar xz` gives `duck-quill/quill`, with this skill, `docs/` and `examples/` beside it. Otherwise, from the repository's root: `cargo build --release -p quill_cli` (under a minute; build only that crate: the whole workspace also builds the window app and takes many times longer), then `target/release/quill`. Below it's `quill`; it isn't on the PATH, so give its full path from elsewhere (`art-cli` still works). Pictures go to `out/` in the folder you run it from (`--out <folder>` on render, views, export, atlas; check and critique only print). `quill <command> --help` lists one command's options. Start from `examples/two-ducks.json`.
 
 ## The process (after every stage: `quill views` and `quill critique`; fix before moving on)
 
@@ -150,27 +150,27 @@ Tiny things are `pixels` rows: `{ "cmd": "pixels", "at": [6, 3], "colors": { "k"
 
 ## Game tiles
 
-`quill render ground.json --tile` also saves `out/ground-tile.png` (the tile 2 × 2) and says whether opposite edges meet, or where they jump. To make it seamless, paint anything that crosses an edge twice, at x and x ± the width (y ± the height for top and bottom): a stone at `[60, 30]` on a 64-wide tile again at `[-4, 30]`. Or keep things away from the edges. `scatter`, `jitter` and other random marks come out different in each copy, so keep them off the edges. Pack tiles and sprites (one script each) with `quill atlas grass.json water.json --name set`: `out/set.png` and `out/set.json`, which gives each tile's `"index"`, `"x"`, `"y"`, `"width"` and `"height"` by name under `"tiles"` (plus `"tile"`, `"columns"` and `"rows"` when all are one size). Format: `docs/sprite-sheet-format.md`, "Tilesets".
+A tileset is one script: each tile a `define`, all sharing the palette. `speckle` fills pixels from `colors` by weight (grass, dirt, stone, leaves); `clump` gathers them into blobs, `seed` picks the pattern, and it wraps, so a tile repeats without a seam:
+
+```json
+{
+  "palette": { "grass": "#5B9A3A", "grass_dark": "#467F2C", "dirt": "#7A5230", "dirt_dark": "#5E3F24" },
+  "stills": ["grass_top", "grass_side"],
+  "commands": [ { "cmd": "canvas", "width": 16, "height": 16, "pixel": true },
+    { "cmd": "define", "name": "grass_top", "commands": [ { "cmd": "speckle", "seed": 7, "clump": 2, "colors": { "grass": 6, "grass_dark": 3 } } ] },
+    { "cmd": "define", "name": "grass_side", "commands": [ { "cmd": "speckle", "seed": 11, "clump": 2, "colors": { "dirt": 5, "dirt_dark": 2 } },
+      { "cmd": "speckle", "rect": [0, 0, 16, 4], "seed": 7, "colors": { "grass": 3, "grass_dark": 1 } } ] } ] }
+```
+
+`quill export blocks.json` saves every still (all symbols without a `stills` list) in `out/blocks.png`, and `out/blocks.json` gives each one's `"index"`, `"x"`, `"y"`, `"width"`, `"height"` by name under `"tiles"`; no animations needed. `quill atlas a.json b.json --name set` packs separate scripts the same way. `quill render ground.json --tile` saves the tile 2 × 2 and says whether opposite edges meet; things that aren't speckle and cross an edge are painted twice, at x and x ± the width (`scatter` and `jitter` differ per copy: keep them off the edges). A texture with a layout (a skin, a block's faces): `{ "cmd": "skin_box", "name": "head", "at": [0, 0], "size": [8, 8, 8] }` names six regions the Minecraft way (`head.front`, ...), `{ "cmd": "region", "name": "icon", "rect": [48, 0, 8, 8] }` any rectangle; paint by name (`"region": "head.front"` on `speckle`, `{"region": ...}` as an area) and `render` writes `out/<name>.regions.json` for the game. All of it: `docs/sprite-sheet-format.md`.
 
 ## Seeing and checking
 
-- `quill views picture.json` saves `out/picture-views.png`: the picture, gray, squint (big shapes), thumb, flip,
-  the named parts' silhouettes, and a heat map of where the eye goes with the `focal` point ringed; `--heat`
-  (`--gray`, `--squint`, `--thumb`, `--flip`, `--silhouette`) saves one alone.
-- `quill critique picture.json`: about fifteen findings in numbers with hints (values, focal point, colour and
-  key, texture, readability at 96 px, composition; `--detail` every part; `--frames 0-7` an animation).
-- Learn: `skills/duck-quill/lessons.md` (rules, each with the piece that shows it), `skills/duck-quill/mistakes.md`
-  (before pictures and the critique line that catches each), `skills/duck-quill/styles/`, `skills/duck-quill/exercises/`,
-  `skills/duck-quill/references/` (public domain or CC0 only; `quill palette`, `quill values`, `quill compare`).
-  `skills/duck-quill/references/sketchbook/`: the user's own drawings, for line weight, directional shading, pose
-  and energy marks (learn the technique, never redraw their fan-art characters).
-- Finished: `quill gallery add piece.json --name name` (folder, sheets, critique, blind-read skeleton, notes,
-  index tags); `quill gallery rate name 4 "why"` is the person's rating, and it outranks every number.
-- `quill check picture.json --detail` lists the groups and uses inside others; `quill info picture.json` gives each layer's box.
-  `--layers "Characters"` shows only some layers; `--hide "Background"` all but some. `--snapshots --sheet` saves a
-  picture at every `snapshot` command and layer change (add `{ "cmd": "snapshot", "name": "blocked in" }` after big
-  stages) and one sheet of them all. `--crop` may go past the canvas edges; `--scale 0.5` saves `name-50pct.png`;
-  `--pixels` prints a pixel canvas as palette letters; thin lines look faint in previews.
+- `quill views picture.json` saves `out/picture-views.png`: the picture, gray, squint (big shapes), thumb, flip, the named parts' silhouettes, and a heat map of where the eye goes with the `focal` point ringed; `--heat` (`--gray`, `--squint`, `--thumb`, `--flip`, `--silhouette`) saves one alone.
+- `quill critique picture.json`: about fifteen findings in numbers with hints (values, focal point, colour and key, texture, readability at 96 px, composition; `--detail` every part; `--frames 0-7` an animation).
+- Learn: `skills/duck-quill/lessons.md` (rules, each with the piece that shows it), `skills/duck-quill/mistakes.md` (before pictures and the critique line that catches each), `skills/duck-quill/styles/`, `skills/duck-quill/exercises/`, `skills/duck-quill/references/` (public domain or CC0 only; `quill palette`, `quill values`, `quill compare`). `skills/duck-quill/references/sketchbook/`: the user's own drawings, for line weight, directional shading, pose and energy marks (learn the technique, never redraw their fan-art characters).
+- Finished: `quill gallery add piece.json --name name` (folder, sheets, critique, blind-read skeleton, notes, index tags); `quill gallery rate name 4 "why"` is the person's rating, and it outranks every number.
+- `quill check picture.json --detail` lists the groups and uses inside others; `quill info picture.json` gives each layer's box. `--layers "Characters"` shows only some layers; `--hide "Background"` all but some. `--snapshots --sheet` saves a picture at every `snapshot` command and layer change (add `{ "cmd": "snapshot", "name": "blocked in" }` after big stages) and one sheet of them all. `--crop` may go past the canvas edges; `--scale 0.5` saves `name-50pct.png`; `--pixels` prints a pixel canvas as palette letters; thin lines look faint in previews.
 
 ## Making it beautiful
 

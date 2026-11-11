@@ -27,8 +27,13 @@ fn difference(a: [u8; 4], b: [u8; 4]) -> u8 {
 /// texture isn't flagged for being noisy.
 const JUMP_FACTOR: u32 = 3;
 const MIN_JUMP: u8 = 24;
-/// Edges are reported when more than this share of them jumps.
+/// Edges are reported when more than this share of them jumps...
 const REPORT_SHARE: f32 = 0.05;
+/// ...and that is clearly more often than neighbours inside the picture
+/// jump (this many times as often, and `REPORT_SHARE` more). A speckled
+/// tile has hard little colour changes everywhere; its edges are a seam
+/// only if they change more than the rest of it does.
+const EDGE_FACTOR: f32 = 1.5;
 
 /// One line per pair of edges that doesn't meet, saying how much of it
 /// jumps and where the worst stretch is (in canvas pixels: `scale` is how
@@ -53,13 +58,24 @@ pub fn edge_mismatches(image: &Image, scale: f32) -> Vec<String> {
         }
     }
     let threshold = |usual: u8| (u32::from(usual) * JUMP_FACTOR).max(u32::from(MIN_JUMP));
+    // How often neighbours inside the picture jump by more than `limit`.
+    let inside = |steps: &[u8], limit: u32| {
+        let jumps = steps.iter().filter(|&&s| u32::from(s) > limit).count();
+        jumps as f32 / steps.len().max(1) as f32
+    };
     let mut findings = Vec::new();
     // Left and right: each row's last pixel next to its first.
     let limit = threshold(usual(&mut across));
     let rows: Vec<bool> = (0..h)
         .map(|y| u32::from(difference(image.pixel(w - 1, y), image.pixel(0, y))) > limit)
         .collect();
-    if let Some(line) = describe("left and right edges", "y", &rows, scale) {
+    if let Some(line) = describe(
+        "left and right edges",
+        "y",
+        &rows,
+        inside(&across, limit),
+        scale,
+    ) {
         findings.push(line);
     }
     // Top and bottom.
@@ -67,17 +83,27 @@ pub fn edge_mismatches(image: &Image, scale: f32) -> Vec<String> {
     let columns: Vec<bool> = (0..w)
         .map(|x| u32::from(difference(image.pixel(x, h - 1), image.pixel(x, 0))) > limit)
         .collect();
-    if let Some(line) = describe("top and bottom edges", "x", &columns, scale) {
+    if let Some(line) = describe(
+        "top and bottom edges",
+        "x",
+        &columns,
+        inside(&down, limit),
+        scale,
+    ) {
         findings.push(line);
     }
     findings
 }
 
 /// "left and right edges don't meet: 40% of rows jump (most of all at y 120..180)".
-fn describe(edges: &str, axis: &str, jumps: &[bool], scale: f32) -> Option<String> {
+///
+/// `inside` is the share of neighbours inside the picture that jump as
+/// much: edges that jump no more often than that are part of the
+/// texture, not a seam.
+fn describe(edges: &str, axis: &str, jumps: &[bool], inside: f32, scale: f32) -> Option<String> {
     let count = jumps.iter().filter(|&&j| j).count();
     let share = count as f32 / jumps.len() as f32;
-    if share <= REPORT_SHARE {
+    if share <= REPORT_SHARE || share <= inside * EDGE_FACTOR + REPORT_SHARE {
         return None;
     }
     // The longest run of jumps: where to look first.
@@ -177,5 +203,39 @@ mod tests {
         let two = repeated(&image, 2, 2);
         assert_eq!((two.width(), two.height()), (16, 8));
         assert_eq!(two.pixel(9, 5), image.pixel(1, 1));
+    }
+
+    /// A hard-edged blocky texture in three colours, like a speckled
+    /// tile: blocks 4 pixels across, shifted 2 so they cross the edges.
+    /// With `wraps` the blocks carry on round the edges.
+    fn blocky(w: u32, h: u32, wraps: bool) -> Image {
+        let colours = [[90, 150, 60, 255], [70, 125, 45, 255], [120, 180, 80, 255]];
+        let mut image = Image::new(w, h, [0, 0, 0, 255]);
+        for y in 0..h {
+            for x in 0..w {
+                let (bx, by) = if wraps {
+                    (((x + 2) % w) / 4, ((y + 2) % h) / 4)
+                } else {
+                    ((x + 2) / 4, (y + 2) / 4)
+                };
+                let mixed = (bx.wrapping_mul(2_654_435_761) ^ by.wrapping_mul(40_503)) >> 7;
+                image.set_pixel(x as i32, y as i32, colours[(mixed % 3) as usize]);
+            }
+        }
+        image
+    }
+
+    #[test]
+    fn a_speckled_tile_that_wraps_is_not_a_seam_but_one_that_does_not_is() {
+        // Hard colour changes everywhere: until 0.6.0 the edges of any
+        // such tile were reported, though they change no more often than
+        // the rest of it.
+        assert_eq!(
+            edge_mismatches(&blocky(32, 32, true), 1.0),
+            Vec::<String>::new()
+        );
+        let findings = edge_mismatches(&blocky(32, 32, false), 1.0);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(findings[0].starts_with("left and right edges don't meet"));
     }
 }

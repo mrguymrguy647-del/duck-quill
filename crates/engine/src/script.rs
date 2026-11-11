@@ -527,6 +527,9 @@ pub enum Command {
     Scatter(ScatterCmd),
     Text(TextCmd),
     Pixels(PixelsCmd),
+    Speckle(SpeckleCmd),
+    Region(RegionCmd),
+    SkinBox(SkinBoxCmd),
     Snapshot(SnapshotCmd),
     Stamp(StampCmd),
     Filter(FilterCmd),
@@ -564,6 +567,9 @@ impl Command {
             Command::Scatter(_) => "scatter",
             Command::Text(_) => "text",
             Command::Pixels(_) => "pixels",
+            Command::Speckle(_) => "speckle",
+            Command::Region(_) => "region",
+            Command::SkinBox(_) => "skin_box",
             Command::Snapshot(_) => "snapshot",
             Command::Stamp(_) => "stamp",
             Command::Filter(_) => "filter",
@@ -605,6 +611,7 @@ impl Command {
             Command::Scatter(c) => c.name.as_deref(),
             Command::Stamp(c) => c.name.as_deref(),
             Command::Pixels(c) => c.name.as_deref(),
+            Command::Speckle(c) => c.name.as_deref(),
             _ => None,
         }
     }
@@ -624,6 +631,7 @@ impl Command {
             Command::Scatter(c) => c.name = None,
             Command::Stamp(c) => c.name = None,
             Command::Pixels(c) => c.name = None,
+            Command::Speckle(c) => c.name = None,
             _ => {}
         }
         command
@@ -825,6 +833,9 @@ pub struct SelectCmd {
     pub circle: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polygon: Option<Value>,
+    /// A declared region's name (see `RegionCmd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Value>,
     /// Where this layer has paint, as much as each pixel is opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
@@ -1574,6 +1585,119 @@ pub struct PixelsCmd {
     pub at: [f32; 2],
     pub rows: Vec<String>,
     pub colors: BTreeMap<String, String>,
+}
+
+/// `speckle`: fills a rectangle of whole canvas pixels with colours
+/// chosen pixel by pixel, by weight: grass, dirt, stone, leaves. The
+/// same `seed` gives the same pixels on every computer (only whole
+/// numbers are used), and the pattern wraps round the rectangle's
+/// edges, so a tile speckled edge to edge repeats without a seam.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeckleCmd {
+    /// A name, as on a group: `check` lists it as a part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `[x, y, width, height]` in whole pixels. Without it (and without
+    /// `region`), the whole canvas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rect: Option<[f32; 4]>,
+    /// A declared region's name (see `region` and `skin_box`), in place
+    /// of `rect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Each colour and its weight: `{"grass": 6, "grass_dark": 3}` gives
+    /// twice as many `grass` pixels as `grass_dark`.
+    pub colors: BTreeMap<String, u32>,
+    /// Neighbouring pixels gather into blobs about this many pixels
+    /// across (default 1: every pixel on its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clump: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Value>,
+}
+
+/// `region`: gives a rectangle of the canvas a name. It paints nothing.
+/// `render` and `export` write every region into `<name>.regions.json`
+/// beside the picture, so a game reads the layout the script declares
+/// and it's written once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegionCmd {
+    pub name: String,
+    /// `[x, y, width, height]`.
+    pub rect: [f32; 4],
+}
+
+/// `skin_box`: the six faces of a box `[width, height, depth]`, unwrapped
+/// the way Minecraft skins are, as six regions `<name>.top`, `.bottom`,
+/// `.right`, `.front`, `.left` and `.back`. `at` is the top-left corner
+/// of the unwrapped shape, which is `2 * (width + depth)` wide and
+/// `depth + height` high. It paints nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkinBoxCmd {
+    pub name: String,
+    pub at: [f32; 2],
+    pub size: [f32; 3],
+}
+
+/// A named rectangle of the canvas, as a script declared it (see
+/// `RegionCmd`), in canvas pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A `skin_box` a script declared: where it is and its size, in canvas
+/// pixels. Its six faces are regions called `<name>.<face>`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinBox {
+    pub name: String,
+    pub at: [i32; 2],
+    /// Width, height and depth.
+    pub size: [u32; 3],
+}
+
+impl SkinBox {
+    /// The faces' names, in the order they're declared.
+    pub const FACES: [&'static str; 6] = ["top", "bottom", "right", "front", "left", "back"];
+
+    /// The six faces as regions, unwrapped the Minecraft way:
+    ///
+    /// ```text
+    ///          d      w      w
+    ///        +-----+------+------+
+    ///      d |     | top  |bottom|
+    ///        +-----+------+------+-----+
+    ///      h |right|front | left | back|
+    ///        +-----+------+------+-----+
+    ///          d      w      d      w
+    /// ```
+    pub fn faces(&self) -> Vec<Region> {
+        let [x, y] = self.at;
+        let [w, h, d] = self.size;
+        let (wi, di) = (w as i32, d as i32);
+        let face = |face: &str, x: i32, y: i32, width: u32, height: u32| Region {
+            name: format!("{}.{face}", self.name),
+            x,
+            y,
+            width,
+            height,
+        };
+        vec![
+            face("top", x + di, y, w, d),
+            face("bottom", x + di + wi, y, w, d),
+            face("right", x, y + di, d, h),
+            face("front", x + di, y + di, w, h),
+            face("left", x + di + wi, y + di, d, h),
+            face("back", x + di + wi + di, y + di, w, h),
+        ]
+    }
 }
 
 /// `snapshot`: a named checkpoint. The command-line renderer can save a
