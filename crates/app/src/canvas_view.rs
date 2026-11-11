@@ -396,6 +396,28 @@ impl CanvasView {
 
     /// Draws `image` (the canvas's size, see-through) over the canvas
     /// from now on; `None` takes it away. Setting it again replaces it.
+    /// Where canvas point (x, y) is in the window, in screen points (for
+    /// the test driver, which draws with the pen there).
+    #[cfg(feature = "demo")]
+    pub fn canvas_to_window(&self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.view.canvas_to_screen(Point::new(x, y));
+        (p.x, p.y)
+    }
+
+    /// The tool, colour and size, as if chosen in the tool panel (for
+    /// the test driver).
+    #[cfg(feature = "demo")]
+    pub fn choose(&mut self, tool: Tool, color: Option<[u8; 3]>, size: Option<f32>) {
+        self.tools.tool = tool;
+        if let Some(color) = color {
+            self.tools.brush.color = color;
+        }
+        if let Some(size) = size {
+            self.tools.brush.size = size;
+            self.tools.eraser.size = size;
+        }
+    }
+
     /// True while an overlay (the onion skin) is shown.
     pub fn has_overlay(&self) -> bool {
         self.overlay.is_some()
@@ -409,10 +431,8 @@ impl CanvasView {
         }
     }
 
-    /// A tile of paper with the overlay (onion skin) blended on it, for
-    /// the layers to go over.
-    fn paper_with_overlay(&self, document: &Document, coord: TileCoord) -> Tile {
-        let mut base = document.paper_tile(coord);
+    /// `base` with the overlay (onion skin) blended on it.
+    fn with_overlay(&self, document: &Document, coord: TileCoord, mut base: Tile) -> Tile {
         let Some(image) = &self.overlay else {
             return base;
         };
@@ -1005,8 +1025,25 @@ impl CanvasView {
                 layer.visible() && Some(layer.id()) != left_out
             };
             let tile = if overlaid {
-                let base = self.paper_with_overlay(document, coord);
-                document.composite_tile_over(coord, base, shown)
+                // The onion skin goes over the still layers under the
+                // drawing (a solid background would hide it), and under
+                // the first animated layer and those above it.
+                // (A clipped layer stays with the layer it's clipped to.)
+                let layers = document.layers();
+                let mut split = layers
+                    .iter()
+                    .position(|l| l.animated())
+                    .unwrap_or(layers.len());
+                while split > 0 && split < layers.len() && layers[split].clip() {
+                    split -= 1;
+                }
+                let below: Vec<quill_engine::layer::LayerId> =
+                    layers[..split].iter().map(|l| l.id()).collect();
+                let under = document.composite_tile_over(coord, document.paper_tile(coord), |l| {
+                    shown(l) && below.contains(&l.id())
+                });
+                let base = self.with_overlay(document, coord, under);
+                document.composite_tile_over(coord, base, |l| shown(l) && !below.contains(&l.id()))
             } else {
                 match document.composite_tile_showing(coord, Background::Paper, shown) {
                     Some(tile) => tile,

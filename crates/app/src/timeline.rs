@@ -152,13 +152,27 @@ pub fn onion_frames(timeline: &Timeline, frame: usize, onion: Onion) -> Vec<(usi
     found
 }
 
-/// The onion skin as one see-through picture the canvas's size.
+/// The onion skin as one see-through picture the canvas's size: only
+/// what's drawn frame by frame (the animated layers), never the still
+/// ones, which are the same on every frame anyway.
 pub fn onion_skin(document: &Document, frames: &[(usize, [u8; 3], f32)]) -> Image {
     let mut skin = Image::new(document.width(), document.height(), [0, 0, 0, 0]);
     // Farthest first, so the nearest lie on top.
     for &(frame, color, strength) in frames.iter().rev() {
-        let picture = Image::of_document(&document.frame_picture(frame), Background::Transparent);
-        skin.paste(&picture.tinted(color, strength), 0, 0);
+        let mut picture = document.frame_picture(frame);
+        let still: Vec<_> = picture
+            .layers()
+            .iter()
+            .filter(|l| !l.animated())
+            .map(|l| l.id())
+            .collect();
+        for id in still {
+            if let Some(layer) = picture.layer_mut(id) {
+                layer.set_visible(false);
+            }
+        }
+        let image = Image::of_document(&picture, Background::Transparent);
+        skin.paste(&image.tinted(color, strength), 0, 0);
     }
     skin
 }
@@ -853,5 +867,35 @@ mod tests {
         assert_eq!(&blue[..3], &ONION_AFTER);
         assert!(red[3] > 60 && red[3] < 140, "faint: {}", red[3]);
         assert_eq!(skin.pixel(5, 5)[3], 0, "the frame shown isn't in it");
+    }
+
+    #[test]
+    fn a_still_background_is_not_in_the_onion_skin() {
+        let mut document = quill_engine::frames::new_animation(20, 20, 3);
+        let background = document.layers()[0].id();
+        document
+            .layer_mut(background)
+            .unwrap()
+            .surface
+            .paint_pixels(
+                quill_engine::surface::PixelRect::new(0, 0, 20, 20),
+                |_, _| Some(quill_engine::tile::Rgba8::new(0, 200, 0, 255)),
+            );
+        document.go_to_frame(0);
+        document.active_layer_mut().surface.set_pixel(
+            3,
+            3,
+            quill_engine::tile::Rgba8::new(0, 0, 0, 255),
+        );
+        document.go_to_frame(1);
+        let onion = Onion {
+            on: true,
+            before: 1,
+            after: 1,
+            strength: 0.4,
+        };
+        let skin = onion_skin(&document, &onion_frames(document.timeline(), 1, onion));
+        assert_eq!(&skin.pixel(3, 3)[..3], &ONION_BEFORE, "frame 0's drawing");
+        assert_eq!(skin.pixel(10, 10)[3], 0, "no background");
     }
 }

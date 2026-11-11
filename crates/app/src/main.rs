@@ -11,6 +11,8 @@ mod autosave;
 mod brush_panel;
 mod canvas_view;
 mod color_panel;
+#[cfg(feature = "demo")]
+mod demo;
 mod edit;
 mod files;
 mod filter_tool;
@@ -157,6 +159,9 @@ struct DuckQuill {
     /// When the settings were last saved (they're saved now and then, so
     /// a crash doesn't forget the brush).
     settings_saved: Instant,
+    /// The test driver (see `demo.rs`), in builds made for it.
+    #[cfg(feature = "demo")]
+    demo: Option<demo::Demo>,
 }
 
 impl DuckQuill {
@@ -255,6 +260,8 @@ impl DuckQuill {
             last_input: Instant::now(),
             ctx: None,
             settings_saved: Instant::now(),
+            #[cfg(feature = "demo")]
+            demo: demo::Demo::from_env(),
         }
     }
 
@@ -630,61 +637,72 @@ impl DuckQuill {
     }
 
     /// Carries out File → Export animation's choice, for the frames of
-    /// the picture.
+    /// the picture: asks where, then exports.
     fn export_animation(&mut self, frame: &eframe::Frame, choice: AnimationExport) {
         let name = self.animation_name();
+        let path = match choice {
+            AnimationExport::Sheet => self.files.ask_sheet_path(frame),
+            AnimationExport::Frames => self.files.ask_frames_folder(frame),
+            AnimationExport::Gif => self.files.ask_gif_path(frame, &name),
+        };
+        let Some(path) = path else {
+            return; // cancelled
+        };
+        match self.export_animation_to(choice, &path) {
+            Ok(what) => self.files.show_message("Exported", what),
+            Err(error) => self.files.show_message("Couldn't export", error),
+        }
+    }
+
+    /// Exports the picture's animation to `path`: the sprite sheet PNG
+    /// (its JSON beside it), a folder of frames, or a GIF of the
+    /// animation shown. Returns what was written.
+    fn export_animation_to(&self, choice: AnimationExport, path: &Path) -> Result<String, String> {
+        let name = self.animation_name();
         let document = &self.document;
-        let result = match choice {
-            AnimationExport::Sheet => self.files.ask_sheet_path(frame).map(|path| {
+        match choice {
+            AnimationExport::Sheet => {
                 let image_name = path.file_name().map_or_else(
                     || "sheet.png".to_owned(),
                     |n| n.to_string_lossy().into_owned(),
                 );
-                document
-                    .sprite_sheet(&name, &image_name, 1)
-                    .and_then(|(sheet, json)| {
-                        sheet
-                            .save_png(&path, true)
-                            .map_err(|e| format!("{}: {e}", path.display()))?;
-                        let json_path = path.with_extension("json");
-                        std::fs::write(&json_path, json)
-                            .map_err(|e| format!("{}: {e}", json_path.display()))?;
-                        Ok(format!("{} and {}", path.display(), json_path.display()))
-                    })
-            }),
-            AnimationExport::Frames => self.files.ask_frames_folder(frame).map(|folder| {
+                let (sheet, json) = document.sprite_sheet(&name, &image_name, 1)?;
+                sheet
+                    .save_png(path, true)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let json_path = path.with_extension("json");
+                std::fs::write(&json_path, json)
+                    .map_err(|e| format!("{}: {e}", json_path.display()))?;
+                Ok(format!("{} and {}", path.display(), json_path.display()))
+            }
+            AnimationExport::Frames => {
+                std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let mut count = 0;
-                let mut result = Ok(());
                 for played in document.animations(&name) {
                     let images = document.frame_images(&played.frames);
                     for (n, frame) in played.frames.iter().enumerate() {
-                        let path = folder.join(format!("{}-{n:03}.png", played.name));
-                        if let Err(e) = images[frame].save_png(&path, true) {
-                            result = Err(format!("{}: {e}", path.display()));
-                        }
+                        let file = path.join(format!("{}-{n:03}.png", played.name));
+                        images[frame]
+                            .save_png(&file, true)
+                            .map_err(|e| format!("{}: {e}", file.display()))?;
                         count += 1;
                     }
                 }
-                result.map(|()| format!("{count} frames in {}", folder.display()))
-            }),
-            AnimationExport::Gif => self.files.ask_gif_path(frame, &name).map(|path| {
-                let played = document
-                    .animations(&name)
-                    .into_iter()
+                Ok(format!("{count} frames in {}", path.display()))
+            }
+            AnimationExport::Gif => {
+                let all = document.animations(&name);
+                let played = all
+                    .iter()
                     .find(|p| p.frames.contains(&document.frame()))
-                    .unwrap_or_else(|| document.animations(&name).remove(0));
+                    .unwrap_or(&all[0]);
                 let images = document.frame_images(&played.frames);
                 let ticks: Vec<quill_engine::image::Image> =
                     played.ticks().iter().map(|f| images[f].clone()).collect();
-                save_gif(&ticks, played.fps, played.looping, &path)
-                    .map(|()| path.display().to_string())
-                    .map_err(|e| format!("{}: {e}", path.display()))
-            }),
-        };
-        match result {
-            Some(Ok(what)) => self.files.show_message("Exported", what),
-            Some(Err(error)) => self.files.show_message("Couldn't export", error),
-            None => {} // cancelled
+                save_gif(&ticks, played.fps, played.looping, path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                Ok(path.display().to_string())
+            }
         }
     }
 
@@ -752,7 +770,10 @@ impl eframe::App for DuckQuill {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Pen and touch events since the last frame, for whichever screen is showing.
-        let ink_events = self.pen_input.take_events();
+        #[allow(unused_mut)]
+        let mut ink_events = self.pen_input.take_events();
+        #[cfg(feature = "demo")]
+        ink_events.extend(self.demo_step(ui, frame));
         let had_ink = !ink_events.is_empty();
         self.ctx = Some(ui.ctx().clone());
 

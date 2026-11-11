@@ -10,6 +10,11 @@ rust-version.workspace = true
 name = "DuckQuill"
 path = "src/main.rs"
 
+# A test driver that runs the app from a list of steps and takes
+# screenshots (crates/app/src/demo.rs). Never in the download.
+[features]
+demo = []
+
 [dependencies]
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
