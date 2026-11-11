@@ -14,6 +14,7 @@
 //! script of everything painted: that's "Export strokes".
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::document::Document;
 use crate::layer::LayerId;
@@ -53,7 +54,7 @@ pub struct TileCommand {
     name: String,
     /// The layer whose tiles changed.
     layer: LayerId,
-    tiles: Vec<(TileCoord, Option<Tile>)>,
+    tiles: Vec<(TileCoord, Option<Arc<Tile>>)>,
 }
 
 impl TileCommand {
@@ -94,7 +95,14 @@ impl Command for TileCommand {
     }
 
     fn memory_size(&self) -> usize {
-        let stored = self.tiles.iter().filter(|(_, tile)| tile.is_some()).count();
+        // Only tiles nothing else holds cost memory here: one still
+        // shared with the picture (another frame shows it) is counted
+        // there.
+        let stored = self
+            .tiles
+            .iter()
+            .filter(|(_, tile)| tile.as_ref().is_some_and(|t| Arc::strong_count(t) == 1))
+            .count();
         stored * TILE_BYTES
     }
 }

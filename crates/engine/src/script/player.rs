@@ -3187,7 +3187,7 @@ impl Player {
         };
         let mut before = TilesBefore::new();
         for (coord, tile) in tiles {
-            let old = layer.surface.replace_tile(coord, Some(tile));
+            let old = layer.surface.replace_tile(coord, Some(Arc::new(tile)));
             before.insert(coord, old);
         }
         self.remember_tiles(id, before);

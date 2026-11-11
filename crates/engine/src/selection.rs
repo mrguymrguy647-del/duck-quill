@@ -525,7 +525,7 @@ pub fn paste_into(surface: &mut Surface, clip: &Clip, limits: PixelRect) -> Tile
                 if !tile_changed {
                     before
                         .entry(coord)
-                        .or_insert_with(|| surface.tile(coord).cloned());
+                        .or_insert_with(|| surface.tile_shared(coord));
                     tile_changed = true;
                 }
                 surface.tile_mut(coord).set_pixel(
@@ -560,7 +560,7 @@ pub fn drop_onto(document: &mut Document, from: LayerId, onto: LayerId) -> Tiles
         };
         before
             .entry(coord)
-            .or_insert_with(|| target.surface.tile(coord).cloned());
+            .or_insert_with(|| target.surface.tile_shared(coord));
         let dest = target.surface.tile_mut(coord);
         for y in 0..TILE_SIZE {
             for x in 0..TILE_SIZE {

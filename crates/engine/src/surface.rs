@@ -6,8 +6,15 @@
 //!
 //! The surface also remembers which tiles changed ("dirty" tiles), so the
 //! screen only needs to redraw those.
+//!
+//! Tiles are shared: a copy of a surface (another frame of an animation,
+//! an undo step, an autosave copy) points at the same tiles, and a tile
+//! is only really copied at the moment one of them paints on it
+//! ("copy on write"). So a copy costs almost no memory until it's
+//! changed, and then only for the tiles that differ.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::tile::{Pixel, Rgba8, TILE_SIZE, Tile};
 
@@ -115,7 +122,7 @@ impl PixelRect {
 /// All the pixels of one layer.
 #[derive(Debug, Clone, Default)]
 pub struct Surface<P: Pixel = Rgba8> {
-    tiles: HashMap<TileCoord, Box<Tile<P>>>,
+    tiles: HashMap<TileCoord, Arc<Tile<P>>>,
     dirty: HashSet<TileCoord>,
     /// The same, kept apart for the Layers panel's thumbnails: the canvas
     /// takes its list every frame, the thumbnails only after a stroke.
@@ -158,7 +165,9 @@ impl<P: Pixel> Surface<P> {
     ///
     /// `new_pixel(x, y)` is asked about each pixel and returns the new
     /// value, or `None` to leave it alone. A tile is only created if at
-    /// least one of its pixels gets a value. Changed tiles are marked dirty.
+    /// least one of its pixels gets a value, and a tile shared with a
+    /// copy of this surface is only copied if one of its pixels does.
+    /// Changed tiles are marked dirty.
     pub fn paint_pixels(
         &mut self,
         rect: PixelRect,
@@ -171,26 +180,49 @@ impl<P: Pixel> Surface<P> {
 
             // Take the tile out of the map while we work on it (or start
             // without one), and put it back afterwards.
-            let mut tile = self.tiles.remove(&coord);
-            let mut changed = false;
-            for y in area.top..area.bottom {
-                for x in area.left..area.right {
-                    let Some(pixel) = new_pixel(x, y) else {
-                        continue;
-                    };
-                    // Painting "transparent" where there is no tile changes nothing.
-                    if tile.is_none() && pixel == P::TRANSPARENT {
-                        continue;
+            let mut slot = self.tiles.remove(&coord);
+            // 1. Look for the first pixel that changes something.
+            //    (Painting "transparent" where there is no tile doesn't.)
+            let (mut x, mut y) = (area.left, area.top);
+            let mut first = None;
+            'find: while y < area.bottom {
+                while x < area.right {
+                    if let Some(pixel) = new_pixel(x, y)
+                        && (slot.is_some() || pixel != P::TRANSPARENT)
+                    {
+                        first = Some(pixel);
+                        break 'find;
                     }
-                    let tile = tile.get_or_insert_with(|| Box::new(Tile::new()));
-                    tile.set_pixel((x - left) as usize, (y - top) as usize, pixel);
-                    changed = true;
+                    x += 1;
+                }
+                x = area.left;
+                y += 1;
+            }
+            // 2. Only now is the tile made ours to change (created, or
+            //    copied if a copy of this surface shares it), once, and
+            //    the rest of the pixels go straight into it.
+            if let Some(pixel) = first {
+                let tile = Arc::make_mut(slot.get_or_insert_with(|| Arc::new(Tile::new())));
+                tile.set_pixel((x - left) as usize, (y - top) as usize, pixel);
+                x += 1;
+                loop {
+                    while x < area.right {
+                        if let Some(pixel) = new_pixel(x, y) {
+                            tile.set_pixel((x - left) as usize, (y - top) as usize, pixel);
+                        }
+                        x += 1;
+                    }
+                    x = area.left;
+                    y += 1;
+                    if y >= area.bottom {
+                        break;
+                    }
                 }
             }
-            if let Some(tile) = tile {
+            if let Some(tile) = slot {
                 self.tiles.insert(coord, tile);
             }
-            if changed {
+            if first.is_some() {
                 self.mark(coord);
             }
         }
@@ -201,45 +233,64 @@ impl<P: Pixel> Surface<P> {
         self.tiles.get(&coord).map(|tile| &**tile)
     }
 
+    /// The tile at `coord`, shared: a cheap copy that keeps the pixels
+    /// as they are now, whatever is painted on the surface afterwards
+    /// (what undo keeps of a tile before a stroke).
+    pub fn tile_shared(&self, coord: TileCoord) -> Option<Arc<Tile<P>>> {
+        self.tiles.get(&coord).cloned()
+    }
+
     /// The tile at `coord` for changing, created (transparent) if it doesn't
-    /// exist yet. It is marked dirty, since the caller is about to change it.
+    /// exist yet, and copied first if a copy of this surface shares it.
+    /// It is marked dirty, since the caller is about to change it.
     pub fn tile_mut(&mut self, coord: TileCoord) -> &mut Tile<P> {
         self.mark(coord);
-        self.tiles
-            .entry(coord)
-            .or_insert_with(|| Box::new(Tile::new()))
+        Arc::make_mut(
+            self.tiles
+                .entry(coord)
+                .or_insert_with(|| Arc::new(Tile::new())),
+        )
     }
 
     /// Removes one tile (its area becomes transparent) and returns it.
-    pub fn remove_tile(&mut self, coord: TileCoord) -> Option<Tile<P>> {
+    pub fn remove_tile(&mut self, coord: TileCoord) -> Option<Arc<Tile<P>>> {
         let tile = self.tiles.remove(&coord)?;
         self.mark(coord);
-        Some(*tile)
+        Some(tile)
     }
 
     /// Puts `tile` at `coord` (or, if `tile` is `None`, makes that area
     /// empty), and returns the tile that was there. Used by undo and redo.
-    pub fn replace_tile(&mut self, coord: TileCoord, tile: Option<Tile<P>>) -> Option<Tile<P>> {
+    pub fn replace_tile(
+        &mut self,
+        coord: TileCoord,
+        tile: Option<Arc<Tile<P>>>,
+    ) -> Option<Arc<Tile<P>>> {
         self.mark(coord);
-        let old = match tile {
-            Some(tile) => self.tiles.insert(coord, Box::new(tile)),
+        match tile {
+            Some(tile) => self.tiles.insert(coord, tile),
             None => self.tiles.remove(&coord),
-        };
-        old.map(|tile| *tile)
+        }
     }
 
     /// Removes every tile: the whole surface becomes transparent again.
     /// Returns the removed tiles (so clearing can be undone).
-    pub fn clear(&mut self) -> HashMap<TileCoord, Tile<P>> {
+    pub fn clear(&mut self) -> HashMap<TileCoord, Arc<Tile<P>>> {
         // The removed tiles count as changed, so the screen updates.
         let all: Vec<TileCoord> = self.tiles.keys().copied().collect();
         for coord in all {
             self.mark(coord);
         }
+        self.tiles.drain().collect()
+    }
+
+    /// How many of this surface's tiles are also held by something else
+    /// (another frame, an undo step, a copy): they cost no memory here.
+    pub fn shared_tile_count(&self) -> usize {
         self.tiles
-            .drain()
-            .map(|(coord, tile)| (coord, *tile))
-            .collect()
+            .values()
+            .filter(|tile| Arc::strong_count(tile) > 1)
+            .count()
     }
 
     /// All the tiles that exist, in no particular order.
@@ -426,7 +477,11 @@ mod tests {
         red_tile.set_pixel(0, 0, RED);
 
         // Put a tile where there was none.
-        assert!(surface.replace_tile(coord, Some(red_tile)).is_none());
+        assert!(
+            surface
+                .replace_tile(coord, Some(Arc::new(red_tile)))
+                .is_none()
+        );
         assert_eq!(surface.pixel(0, 0), RED);
         // Take it out again: we get it back, and the area is empty.
         let back = surface.replace_tile(coord, None).expect("the red tile");
@@ -475,5 +530,50 @@ mod tests {
         assert_eq!(surface.take_dirty_tiles(), vec![TileCoord::new(1, 1)]);
         assert_eq!(surface.take_thumbnail_tiles(), vec![TileCoord::new(1, 1)]);
         assert!(surface.take_thumbnail_tiles().is_empty());
+    }
+
+    #[test]
+    fn a_copy_shares_its_tiles_until_one_of_them_is_painted_on() {
+        let mut original: Surface = Surface::new();
+        original.set_pixel(10, 10, RED);
+        original.set_pixel(300, 10, RED);
+        assert_eq!(original.shared_tile_count(), 0);
+        // A copy costs no pixels: both point at the same two tiles.
+        let mut copy = original.clone();
+        assert_eq!((copy.tile_count(), copy.shared_tile_count()), (2, 2));
+        assert_eq!(original.shared_tile_count(), 2);
+        // Painting on the copy copies only the tile painted on, and the
+        // original doesn't see it.
+        copy.set_pixel(11, 10, RED);
+        assert_eq!(copy.shared_tile_count(), 1);
+        assert_eq!(original.pixel(11, 10), Rgba8::TRANSPARENT);
+        assert_eq!(copy.pixel(11, 10), RED);
+        assert_eq!(copy.pixel(300, 10), RED, "the other tile is still shared");
+        // `tile_mut` does the same.
+        copy.tile_mut(TileCoord::new(1, 0)).set_pixel(0, 0, RED);
+        assert_eq!(copy.shared_tile_count(), 0);
+        assert_eq!(original.pixel(256, 0), Rgba8::TRANSPARENT);
+        // Once the copy is gone, the original's tiles are its own again.
+        drop(copy);
+        assert_eq!(original.shared_tile_count(), 0);
+    }
+
+    #[test]
+    fn asking_about_pixels_without_changing_any_copies_nothing() {
+        let mut original: Surface = Surface::new();
+        original.set_pixel(10, 10, RED);
+        let mut copy = original.clone();
+        let _ = copy.take_dirty_tiles();
+        // Every pixel is left alone: the tile stays shared and clean.
+        copy.paint_pixels(PixelRect::new(0, 0, 256, 256), |_, _| None);
+        assert_eq!(copy.shared_tile_count(), 1);
+        assert!(copy.take_dirty_tiles().is_empty());
+        // A kept tile (what undo holds) keeps its pixels whatever is
+        // painted afterwards.
+        let kept = copy.tile_shared(TileCoord::new(0, 0)).unwrap();
+        copy.set_pixel(10, 10, Rgba8::TRANSPARENT);
+        assert_eq!(kept.pixel(10, 10), RED);
+        assert_eq!(copy.pixel(10, 10), Rgba8::TRANSPARENT);
+        assert_eq!(original.pixel(10, 10), RED);
     }
 }

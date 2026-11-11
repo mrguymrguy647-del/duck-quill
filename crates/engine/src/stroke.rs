@@ -95,7 +95,7 @@ const CURVE_PIECE_LENGTH: f32 = 2.0;
 
 /// The tiles a stroke changed, as they were before it. `None` means the
 /// tile didn't exist yet. Undo (Step 5) will put these back.
-pub type TilesBefore = HashMap<TileCoord, Option<Tile>>;
+pub type TilesBefore = HashMap<TileCoord, Option<std::sync::Arc<Tile>>>;
 
 /// A stroke being painted.
 pub struct Stroke {
@@ -359,7 +359,7 @@ impl Stroke {
             });
             // How dark the layer was before this stroke, for the tooth.
             let original = match self.before.get(&coord) {
-                Some(before) => before.as_ref(),
+                Some(before) => before.as_deref(),
                 None => layer.tile(coord),
             };
             let mut changed = false;
@@ -414,8 +414,8 @@ impl Stroke {
             let before = self
                 .before
                 .entry(coord)
-                .or_insert_with(|| layer.tile(coord).cloned())
-                .as_ref();
+                .or_insert_with(|| layer.tile_shared(coord))
+                .as_deref();
 
             // 3. Change the original pixels, as strongly as the coverage says:
             //    lay the colour over them, or erase them.

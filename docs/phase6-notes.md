@@ -52,3 +52,33 @@ own: `TILES` and the others in `crates/cli/tests/render.rs`).
 
 Also found and fixed while testing these: on a pixel canvas, `check` lost which commands
 painted each layer (and could call a painted layer empty in every frame).
+
+## Painting speed after tiles are shared (Step 2's first commit)
+
+Same machine, same test, best of three, beside the "before" above.
+
+| What | Before (ms) | After (ms) |
+|---|---|---|
+| make 20 painted layers | 1471.3 | 1304.0 |
+| long stroke, size 60, no selection | 92.8 | 76.9 |
+| long stroke, size 60, pencil (grain) | 188.5 | 153.3 |
+| long stroke, size 60, four-way symmetry | 324.7 | 295.7 |
+| blur 8 px, no selection | 647.7 | 514.4 |
+| select a big ellipse | 154.4 | 121.3 |
+| feather it by 30 px | 137.2 | 111.4 |
+| its outline (marching ants) | 41.8 | 38.2 |
+| long stroke, size 60, inside the selection | 77.8 | 70.2 |
+| paint bucket inside the selection | 33.1 | 33.4 |
+| blur 8 px inside the selection | 639.9 | 558.4 |
+| copy the selection | 44.3 | 34.8 |
+| the whole picture, all 20 layers combined | 782.3 | 740.3 |
+| a copy of the document (as autosave would) | 120.9 | under 0.1 |
+
+Gallery renders (best of three): sunset-pond-v3 1.98 s before, 1.85 s after; forest-at-dawn
+2.92 s, 2.34 s; duck-portrait-v2 0.81 s, 0.86 s.
+
+What this shows, allowing for the 10 to 15 percent noise between runs: nothing got slower. A
+stroke does the same work as before (the one copy of each tile it touches is now made when
+the tile is first painted on, where before it was made for undo). The clear change is the copy
+of a whole picture: it no longer copies any pixels, which is what makes frames and autosave
+copies cheap.

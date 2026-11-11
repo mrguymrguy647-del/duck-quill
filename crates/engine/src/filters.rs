@@ -7,6 +7,8 @@
 //! the result is written back a tile at a time, returning the tiles as
 //! they were for undo.
 
+use std::sync::Arc;
+
 use crate::color::Hsv;
 use crate::fill::{GradientStop, Mask, color_through_stops};
 use crate::surface::{PixelRect, Surface, TileCoord};
@@ -149,7 +151,9 @@ pub fn apply_within(
         } else {
             // Nothing selected here changed: put the tile back as it was.
             match old {
-                Some(tile) => *surface.tile_mut(*coord) = tile.clone(),
+                Some(tile) => {
+                    surface.replace_tile(*coord, Some(Arc::clone(tile)));
+                }
                 None => {
                     surface.remove_tile(*coord);
                 }
@@ -253,7 +257,7 @@ impl Block {
                 }
             }
             if changed {
-                let tile = (!tile.is_transparent()).then_some(tile);
+                let tile = (!tile.is_transparent()).then(|| Arc::new(tile));
                 let old = surface.replace_tile(coord, tile);
                 before.insert(coord, old);
             }
@@ -833,7 +837,7 @@ pub fn lay_over(onto: &mut Surface, part: &Surface, limits: PixelRect) -> TilesB
             }
         }
         if changed {
-            let old = onto.replace_tile(coord, Some(tile));
+            let old = onto.replace_tile(coord, Some(Arc::new(tile)));
             before.insert(coord, old);
         }
     }
@@ -865,7 +869,7 @@ pub fn silhouette(surfaces: &[&Surface]) -> Surface {
             }
         }
         if any {
-            out.replace_tile(coord, Some(tile));
+            out.replace_tile(coord, Some(Arc::new(tile)));
         }
     }
     out

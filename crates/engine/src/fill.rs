@@ -11,6 +11,8 @@
 //! Like strokes, filling returns the changed tiles as they were before,
 //! so it can be undone.
 
+use std::sync::Arc;
+
 use crate::brush::BrushMode;
 use crate::color::over_paper;
 use crate::document::{Background, Document};
@@ -940,7 +942,7 @@ fn paint_where(
             }
         }
         if changed {
-            let tile = (!tile.is_transparent()).then_some(tile);
+            let tile = (!tile.is_transparent()).then(|| Arc::new(tile));
             let old = surface.replace_tile(coord, tile);
             before.insert(coord, old);
         }

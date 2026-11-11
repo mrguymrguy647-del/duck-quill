@@ -313,7 +313,7 @@ mod tests {
         let layer = document.active_id();
         let surface = &mut document.active_layer_mut().surface;
         let coord = quill_engine::surface::TileCoord::containing(x, 5);
-        let before = std::collections::HashMap::from([(coord, surface.tile(coord).cloned())]);
+        let before = std::collections::HashMap::from([(coord, surface.tile_shared(coord))]);
         surface.set_pixel(x, 5, Rgba8::new(255, 0, 0, 255));
         history.push(Box::new(TileCommand::new("Dot", layer, before)));
     }

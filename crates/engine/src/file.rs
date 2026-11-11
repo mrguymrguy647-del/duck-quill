@@ -278,7 +278,7 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
             .map_err(|_| FileError::Damaged(format!("{name} can't be read")))?;
         let tile = decode_tile(&bytes)
             .map_err(|detail| FileError::Damaged(format!("{name}: {detail}")))?;
-        surface.replace_tile(coord, Some(tile));
+        surface.replace_tile(coord, Some(std::sync::Arc::new(tile)));
     }
 
     // 4. Put it all together.

@@ -94,7 +94,9 @@ pub fn transform_layer(
         }
         if painted {
             before.entry(coord).or_insert(None);
-            target.surface.replace_tile(coord, Some(tile));
+            target
+                .surface
+                .replace_tile(coord, Some(std::sync::Arc::new(tile)));
         }
     }
     before
