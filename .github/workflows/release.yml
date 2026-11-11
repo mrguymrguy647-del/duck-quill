@@ -1,4 +1,7 @@
-# Makes the Windows download: DuckQuill-<version>-windows.zip.
+# Makes the downloads: DuckQuill-<version>-windows.zip for people, and
+# quill-linux-x86_64.tar.gz for AI agents (quill ready to run on any
+# Linux, with the skill, the docs and the examples, so an agent never
+# has to build it).
 #
 # Three ways to make a release, none needing a terminal:
 # - Actions tab -> Release -> "Run workflow" (the "Make a release" button):
@@ -7,10 +10,10 @@
 # - Releases -> "Draft a new release" on the GitHub website with a new tag
 #   like v0.5.0: this workflow runs on the tag and adds the zip to it.
 # - Pushing a tag like v0.5.0.
-# If the release is already there, its zip is replaced (--clobber) instead
-# of failing. Changing this file (or the release/ folder) on a branch only
-# builds the zip and keeps it as a downloadable "artifact" on the run's
-# page, so it can be checked before any release is made.
+# If the release is already there, its files are replaced (--clobber)
+# instead of failing. Changing this file (or the release/ folder) on a
+# branch only builds the downloads and keeps them as "artifacts" on the
+# run's page, so they can be checked before any release is made.
 name: Release
 
 on:
@@ -30,22 +33,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    permissions:
-      contents: write # to publish the release
+  # The version, read once for every job below.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust
-        shell: bash
-        run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal
-          rustup default "$RUST_VERSION"
-      - uses: Swatinem/rust-cache@v2
-
       - name: Read the version
         id: version
-        shell: bash
         run: |
           # The one place it's written: the workspace Cargo.toml.
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
@@ -62,13 +59,27 @@ jobs:
             echo "tag=v$version" >> "$GITHUB_OUTPUT"
           fi
 
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build
         run: cargo build --release --workspace
 
       - name: Put the zip together
         shell: bash
         run: |
-          name="DuckQuill-${{ steps.version.outputs.version }}-windows"
+          name="DuckQuill-$VERSION-windows"
           folder="dist/Duck Quill"
           mkdir -p "$folder/skills" "$folder/brand"
           cp target/release/DuckQuill.exe target/release/quill.exe target/release/art-cli.exe "$folder/"
@@ -98,31 +109,113 @@ jobs:
           # The programs start and know their version.
           ver=$("dist/Duck Quill/quill.exe" --version)
           echo "$ver"
-          [[ "$ver" == "quill ${{ steps.version.outputs.version }}" ]]
+          [[ "$ver" == "quill $VERSION" ]]
           "dist/Duck Quill/art-cli.exe" --version
 
       - name: Keep the zip on this run's page
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ env.ZIP }}
+          name: windows-zip
           path: ${{ env.ZIP }}
 
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+  # quill for AI agents on Linux: one file that needs nothing installed
+  # (built against musl, so it doesn't depend on the system's libraries),
+  # with what an agent reads beside it.
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARBALL: quill-linux-x86_64.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
         run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-unknown-linux-musl
+          rustup default "$RUST_VERSION"
+
+      # No cache on purpose: this is the build an agent does the first
+      # time, so its time is worth seeing in the log.
+      - name: Build quill alone, from nothing
+        run: |
+          start=$(date +%s)
+          cargo build --release -p quill_cli --target x86_64-unknown-linux-musl
+          echo "quill built from nothing in $(( $(date +%s) - start )) seconds"
+
+      - name: Put the tarball together
+        run: |
+          folder="dist/duck-quill"
+          mkdir -p "$folder/skills" "$folder/docs"
+          cp target/x86_64-unknown-linux-musl/release/quill "$folder/"
+          cp -r skills/duck-quill "$folder/skills/"
+          rm -rf "$folder/skills/duck-quill/references/sketchbook"
+          cp docs/QUICKSTART.md docs/AI_GUIDE.md docs/script-format.md docs/sprite-sheet-format.md "$folder/docs/"
+          cp -r examples "$folder/"
+          tar -C dist -czf "$TARBALL" duck-quill
+          ls -l "$TARBALL"
+
+      - name: Check the tarball as an agent would use it
+        run: |
+          mkdir fresh && tar -C fresh -xzf "$TARBALL"
+          cd fresh/duck-quill
+          ls
+          for wanted in quill skills/duck-quill/SKILL.md docs/QUICKSTART.md docs/script-format.md \
+                        docs/sprite-sheet-format.md examples/two-ducks.json; do
+            [[ -e "$wanted" ]] || { echo "missing: $wanted"; exit 1; }
+          done
+          if find . -iname '*sketchbook*' | grep -q .; then echo "the sketchbook must not be shipped"; exit 1; fi
+          ver=$(./quill --version)
+          echo "$ver"
+          [[ "$ver" == "quill $VERSION" ]]
+          # It paints, checks and exports, from the folder it was unpacked into.
+          ./quill render examples/two-ducks.json --out out
+          ./quill check examples/duck-animated.json > /dev/null
+          ./quill export examples/duck-pixel.json --out out
+          [[ -s out/two-ducks.png && -s out/duck-pixel.json ]]
+          # One file, needing nothing from the system: it also runs where
+          # there is no usual C library at all.
+          file ./quill
+          file ./quill | grep -q 'statically linked\|static-pie linked'
+          docker run --rm -v "$PWD:/q" busybox /q/quill --version
+
+      - name: Keep the tarball on this run's page
+        uses: actions/upload-artifact@v5
+        with:
+          name: linux-tarball
+          path: ${{ env.TARBALL }}
+
+  publish:
+    needs: [version, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to publish the release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: downloads
+          merge-multiple: true
+      - name: Publish the release
+        run: |
+          ls -l downloads
+          zip="DuckQuill-$VERSION-windows.zip"
           if gh release view "$TAG" > /dev/null 2>&1; then
-            # Made on the website (or made before): add the zip, replacing
-            # an older one of the same name, instead of failing.
-            echo "The release $TAG is already there: adding the zip to it."
-            gh release upload "$TAG" "$ZIP" --clobber
+            # Made on the website (or made before): add the files, replacing
+            # older ones of the same name, instead of failing.
+            echo "The release $TAG is already there: adding the files to it."
+            gh release upload "$TAG" downloads/* --clobber
           else
             # --target makes the tag on this run's commit if it doesn't exist.
-            gh release create "$TAG" "$ZIP" --target "$GITHUB_SHA" \
-              --title "Duck Quill ${{ steps.version.outputs.version }}" \
-              --notes "Download $ZIP below, unzip it, and double-click DuckQuill.exe. READ ME FIRST.txt inside says the rest."
+            # A draft until every file is up, so nobody (and no update
+            # check) ever sees half a release.
+            gh release create "$TAG" downloads/* --draft --target "$GITHUB_SHA" \
+              --title "Duck Quill $VERSION" \
+              --notes "Download $zip below, unzip it, and double-click DuckQuill.exe. READ ME FIRST.txt inside says the rest. (quill-linux-x86_64.tar.gz is quill for AI agents on Linux.)"
+            gh release edit "$TAG" --draft=false
           fi
           echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

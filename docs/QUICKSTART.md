@@ -5,13 +5,22 @@ Duck Quill paints pictures from **painting scripts**: JSON files that list what 
 graphics card. This page is enough to start; [script-format.md](script-format.md) has every
 command and option, and [AI_GUIDE.md](AI_GUIDE.md) has techniques and a workflow.
 
-## 1. Build quill (once)
+## 1. Get quill (once)
+
+On Linux (x86_64), download it ready-made (`duck-quill/quill`, with the docs and examples):
+
+```bash
+curl -L https://github.com/mrguymrguy647-del/duck-quill/releases/latest/download/quill-linux-x86_64.tar.gz | tar xz
+```
+
+Or build it, from the repository's root. Build only this crate: it takes under a minute, while
+the whole workspace (with the window app) takes many times longer.
 
 ```bash
 cargo build --release -p quill_cli
 ```
 
-The program is `target/release/quill` (`quill.exe` on Windows). `art-cli`, its name before the
+The program is then `target/release/quill` (`quill.exe` on Windows). `art-cli`, its name before the
 app was renamed Duck Quill, still works.
 
 ## 2. A first script

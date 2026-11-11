@@ -18,14 +18,24 @@ a 32-pixel one, [examples/duck-pixel.json](../examples/duck-pixel.json).
 
 ## 1. Set up (once)
 
-You need Rust (`cargo`). From the repository folder:
+On Linux (x86_64) there's nothing to build: each release has `quill` ready-made, with the skill,
+these docs and the examples beside it.
+
+```bash
+curl -L https://github.com/mrguymrguy647-del/duck-quill/releases/latest/download/quill-linux-x86_64.tar.gz | tar xz
+duck-quill/quill --version
+```
+
+Otherwise you need Rust (`cargo`). From the repository folder:
 
 ```bash
 cargo build --release -p quill_cli
 ```
 
-The program is `target/release/quill`. It only depends on the painting engine (no window
-libraries): a few minutes the first time, seconds after that. Run the build from the repository's
+The program is `target/release/quill`. Build only that crate, as written: it depends on the
+painting engine alone (no window libraries) and takes under a minute the first time, seconds
+after that. A plain `cargo build --release` builds the window app too, about 300 libraries
+instead of 45, and takes many times longer. Run the build from the repository's
 root; elsewhere, give `quill`'s full path (it isn't put on the PATH). Before the app was renamed
 Duck Quill it was `art-cli`, and that name still runs (with one note on stderr), but like `quill`
 it saves pictures as `.quill`, not `.artapp`; scripts saying `"format": "artapp-script"` and
