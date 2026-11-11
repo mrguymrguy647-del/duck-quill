@@ -18,6 +18,7 @@
 //! with examples, is in `docs/script-format.md`.
 
 pub mod animate;
+pub mod bake;
 pub(crate) mod geometry;
 pub(crate) mod player;
 pub mod record;

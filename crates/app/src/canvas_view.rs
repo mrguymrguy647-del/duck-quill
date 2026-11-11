@@ -88,6 +88,9 @@ pub struct CanvasView {
     /// While a script is playing: no painting, and the panels are greyed
     /// out (zooming and moving around still work).
     pub locked: bool,
+    /// The animation tools are on: the Layers panel shows which layers
+    /// are animated.
+    pub animation_tools: bool,
     view: View,
     textures: HashMap<TileCoord, TileTexture>,
     /// Fit the canvas into the window on the first frame.
@@ -131,6 +134,7 @@ impl Default for CanvasView {
     fn default() -> Self {
         Self {
             locked: false,
+            animation_tools: false,
             view: View::default(),
             textures: HashMap::new(),
             needs_fit: true,
@@ -222,6 +226,7 @@ impl CanvasView {
             .exact_size(260.0)
             .show(ui, |ui| {
                 ui.add_enabled_ui(panels_enabled, |ui| {
+                    self.layers.animation_tools = self.animation_tools;
                     self.layers.ui(ui, document, history, painting);
                 });
             });
@@ -391,6 +396,11 @@ impl CanvasView {
 
     /// Draws `image` (the canvas's size, see-through) over the canvas
     /// from now on; `None` takes it away. Setting it again replaces it.
+    /// True while an overlay (the onion skin) is shown.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
     pub fn set_overlay(&mut self, image: Option<Image>) {
         self.overlay = image;
         // It's blended into every tile's picture, so they're all redone.

@@ -384,6 +384,43 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_of_an_animation_has_every_frame_not_only_the_one_shown() {
+        use quill_engine::frames::{AnimatedCommand, FrameCommand};
+        let folder = folder("frames");
+        let start = UNIX_EPOCH + Duration::from_secs(3_000_000);
+        let mut autosave = Autosave::new(Some(folder.clone()), start);
+        let (picture, _) = autosave.files().unwrap();
+        let mut document = Document::new(64, 64);
+        let mut history = History::default();
+        let layer = document.active_id();
+        history.push(Box::new(
+            AnimatedCommand::set(&mut document, layer, true).unwrap(),
+        ));
+        for _ in 0..2 {
+            let end = document.frame_count();
+            history.push(Box::new(FrameCommand::add(&mut document, end).unwrap()));
+        }
+        // A dot on each of the three frames, at 3, 13 and 23; frame 1 shown.
+        for frame in 0..3 {
+            history.go_to_frame(&mut document, frame);
+            paint(&mut document, &mut history, 3 + 10 * frame as i32);
+        }
+        history.go_to_frame(&mut document, 1);
+        autosave.tick(&document, &history, "Walk", None, true, start);
+        autosave.wait();
+        let restored = file::open(&picture).unwrap();
+        assert_eq!((restored.frame_count(), restored.frame()), (3, 1));
+        for frame in 0..3 {
+            let shown = restored.frame_picture(frame);
+            for (other, x) in [3, 13, 23].into_iter().enumerate() {
+                let alpha = shown.active_layer().surface.pixel(x, 5).a;
+                assert_eq!(alpha == 255, other == frame, "frame {frame}, dot at {x}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
     fn a_copy_left_behind_is_offered_only_once_its_duck_quill_has_stopped() {
         let folder = folder("left");
         let start = UNIX_EPOCH + Duration::from_secs(2_000_000);

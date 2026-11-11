@@ -7,7 +7,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod about;
-mod animation_view;
 mod autosave;
 mod brush_panel;
 mod canvas_view;
@@ -30,19 +29,24 @@ mod symmetry_view;
 mod text_tool;
 mod theme;
 mod thumbnails;
+mod timeline;
 mod transform_tool;
 
 use eframe::egui::{self, Button, Key, KeyboardShortcut, Modifiers};
 use quill_engine::document::Document;
 use quill_engine::history::History;
 
-use animation_view::{AnimationView, PanelAction};
 use canvas_view::CanvasView;
 use files::{AnimationExport, DEFAULT_SIZE, Files};
 use filter_tool::FilterTool;
 use pen_input::PenInput;
 use pen_test::PenTestScreen;
 use playback::{BarAction, Playback};
+use quill_engine::frames::{AnimatedCommand, FrameCommand, TimelineCommand};
+use quill_engine::gif::save_gif;
+use quill_engine::history::CommandGroup;
+use quill_engine::script::bake::bake;
+use timeline::{TimelineAction, TimelineView};
 use transform_tool::layer_menu;
 
 use std::path::{Path, PathBuf};
@@ -124,12 +128,15 @@ struct DuckQuill {
     screen: Screen,
     /// A painting script being played on the canvas ("Play strokes").
     playback: Option<Playback>,
-    /// A script's animations, shown frame by frame (the Animation panel).
-    animation: Option<AnimationView>,
-    /// Which animation and frame the canvas shows, so it's replaced only
-    /// when that changes.
-    frame_shown: Option<(String, usize)>,
-    onion_shown: bool,
+    /// The frames at the bottom (while the animation tools are on).
+    timeline: TimelineView,
+    /// View → Animation tools (remembered in the settings).
+    animation_tools: bool,
+    /// The "This picture has 8 frames" note was closed for this picture.
+    note_closed: bool,
+    /// The frames shown came from this painting script, and drawing on
+    /// them waits for "Edit frames by hand".
+    from_script: Option<String>,
     /// Help → About Duck Quill.
     about: about::About,
     /// Help → Keyboard shortcuts.
@@ -162,7 +169,7 @@ impl DuckQuill {
         let mut files = Files::default();
         files.set_recent(settings.recent_files.clone());
         let mut playback = None;
-        let mut animation = None;
+        let mut from_script = None;
         let argument = std::env::args_os().nth(1).map(std::path::PathBuf::from);
         let document = match argument {
             Some(path)
@@ -177,14 +184,16 @@ impl DuckQuill {
                             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                         let folder = path.parent().map(std::path::Path::to_path_buf);
                         if !script.animations.is_empty() {
-                            match AnimationView::new(&script, folder, name) {
-                                Ok(view) => {
-                                    let document = view.document().clone();
-                                    animation = Some(view);
+                            match bake(&script, folder) {
+                                Ok(document) => {
+                                    from_script = Some(name);
                                     Some(document)
                                 }
                                 Err(error) => {
-                                    files.show_message("Couldn't play the script", error);
+                                    files.show_message(
+                                        "Couldn't play the script",
+                                        error.to_string(),
+                                    );
                                     None
                                 }
                             }
@@ -219,6 +228,9 @@ impl DuckQuill {
         let now = SystemTime::now();
         let autosave = Autosave::new(settings_folder.as_ref().map(|f| f.join("recovery")), now);
         let restore_offer = autosave.left_behind();
+        let animation_tools = settings.animation_tools || from_script.is_some();
+        let mut timeline = TimelineView::default();
+        timeline.playback.playing = from_script.is_some();
         Self {
             pen_input,
             document,
@@ -229,9 +241,10 @@ impl DuckQuill {
             pen_test: PenTestScreen::default(),
             screen: Screen::Canvas,
             playback,
-            animation,
-            frame_shown: None,
-            onion_shown: false,
+            timeline,
+            animation_tools,
+            note_closed: false,
+            from_script,
             about: about::About::default(),
             shortcut_sheet: ShortcutSheet::default(),
             window: settings.window,
@@ -257,6 +270,7 @@ impl DuckQuill {
         self.settings.recent_files = self.files.recent().to_vec();
         self.settings.theme = Some(theme::name(ctx.options(|o| o.theme_preference)).to_owned());
         self.settings.window = self.window;
+        self.settings.animation_tools = self.animation_tools;
         if self.settings != before || !folder.join("settings.json").exists() {
             let _ = self.settings.save(folder);
         }
@@ -313,7 +327,7 @@ impl DuckQuill {
                     self.files.restored(left.note.original.clone());
                     self.canvas.reset();
                     self.canvas.fit_text_size(self.document.height());
-                    self.animation = None;
+                    self.new_picture_shown();
                     self.autosave.adopt(&left);
                     self.restore_offer.clear(); // one picture at a time
                 }
@@ -331,61 +345,341 @@ impl DuckQuill {
         }
     }
 
-    /// Shows the Animation panel, plays, and puts the frame shown on the
-    /// canvas (with the onion skin over it).
-    fn update_animation(&mut self, ui: &mut egui::Ui) {
-        let Some(view) = &mut self.animation else {
-            self.canvas.set_overlay(None);
+    /// A different picture is shown: frames, notes and the onion skin
+    /// start afresh.
+    fn new_picture_shown(&mut self) {
+        self.timeline.reset();
+        self.note_closed = false;
+        self.from_script = None;
+        self.history.follow(&self.document);
+        self.canvas.set_overlay(None);
+    }
+
+    /// Frames may change only when nothing is half done on the canvas (a
+    /// stroke, text, a transform) and no script is playing.
+    fn can_change_frames(&self) -> bool {
+        !self.canvas.is_painting()
+            && !self.canvas.is_editing()
+            && !self.canvas.is_typing()
+            && self.playback.is_none()
+    }
+
+    /// Carries out what the timeline (or the Animation menu, or a key)
+    /// asked for.
+    fn timeline_action(&mut self, action: TimelineAction) {
+        if !self.can_change_frames()
+            || self.from_script.is_some() && !matches!(action, TimelineAction::GoTo(_))
+        {
             return;
-        };
-        let seconds = ui.input(|i| i.stable_dt).min(0.25);
-        let mut changed = view.tick(seconds);
-        let action = egui::Panel::bottom("animation")
-            .show(ui, |ui| view.panel(ui))
-            .inner;
-        if view.is_playing() {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f32(
-                    (1.0 / view.fps.max(1.0)).min(0.1),
-                ));
         }
-        // The frame shown is the picture: when it changes, so does the
-        // canvas (and the onion skin with it).
-        let now = (view.current().name.clone(), view.frame());
-        changed |= self.frame_shown.as_ref() != Some(&now);
-        if changed {
-            self.document = view.document().clone();
-            self.frame_shown = Some(now);
-        }
-        if changed || self.onion_shown != view.onion {
-            self.canvas.set_overlay(view.onion_skin());
-            self.onion_shown = view.onion;
-        }
-        if action == PanelAction::Close {
-            self.animation = None;
-            self.frame_shown = None;
-            self.canvas.set_overlay(None);
+        let document = &mut self.document;
+        let history = &mut self.history;
+        match action {
+            TimelineAction::GoTo(frame) => history.go_to_frame(document, frame),
+            TimelineAction::DuplicateOf(frame) => {
+                history.go_to_frame(document, frame);
+                self.timeline_action(TimelineAction::Duplicate);
+            }
+            TimelineAction::Add | TimelineAction::Duplicate => {
+                let shown = document.frame();
+                let mut steps: Vec<Box<dyn quill_engine::history::Command>> = Vec::new();
+                // The first extra frame of a plain picture: the layer
+                // you're on becomes animated (the others stay still).
+                if document.frame_count() == 1 && !document.layers().iter().any(|l| l.animated()) {
+                    let id = document.active_id();
+                    if let Some(step) = AnimatedCommand::set(document, id, true) {
+                        steps.push(Box::new(step));
+                    }
+                }
+                let step = if action == TimelineAction::Add {
+                    FrameCommand::add(document, shown + 1)
+                } else {
+                    FrameCommand::duplicate(document, shown)
+                };
+                if let Some(step) = step {
+                    let name = if action == TimelineAction::Add {
+                        "Add frame"
+                    } else {
+                        "Duplicate frame"
+                    };
+                    steps.push(Box::new(step));
+                    history.push(Box::new(CommandGroup::new(name, steps)));
+                    history.go_to_frame(document, shown + 1);
+                }
+            }
+            TimelineAction::Delete(frame) => {
+                if let Some(step) = FrameCommand::delete(document, frame) {
+                    history.push(Box::new(step));
+                }
+            }
+            TimelineAction::Move(from, to) => {
+                if let Some(step) = FrameCommand::move_to(document, from, to) {
+                    history.push(Box::new(step));
+                }
+            }
+            TimelineAction::Hold(frame, hold) => {
+                if let Some(step) = FrameCommand::hold(document, frame, hold) {
+                    history.push(Box::new(step));
+                }
+            }
+            TimelineAction::Timing(settings) => {
+                if let Some(step) = TimelineCommand::apply(document, settings) {
+                    history.push(Box::new(step));
+                }
+            }
         }
     }
 
-    /// Carries out File → Export animation's choice.
-    fn export_animation(&mut self, frame: &eframe::Frame, choice: AnimationExport) {
-        let Some(view) = &self.animation else {
+    /// The animation the frame shown belongs to: its stretch's name, or
+    /// the picture's.
+    fn animation_name(&self) -> String {
+        match self.document.timeline().stretch_of(self.document.frame()) {
+            Some(stretch) => stretch.name.clone(),
+            None => {
+                let name = self.files.picture_name();
+                let stem = name
+                    .rsplit_once('.')
+                    .map_or(name.as_str(), |(stem, _)| stem);
+                if stem.is_empty() || stem == "Untitled" {
+                    "animation".to_owned()
+                } else {
+                    stem.to_owned()
+                }
+            }
+        }
+    }
+
+    /// The timeline at the bottom, playback, keys, and the onion skin.
+    fn update_timeline(&mut self, ui: &mut egui::Ui, keys: bool) {
+        // Drawing pauses playback.
+        if self.canvas.is_painting() {
+            self.timeline.playback.playing = false;
+        }
+        if !self.animation_tools {
+            self.timeline.playback.playing = false;
+            if self.canvas_overlay_shown() {
+                self.canvas.set_overlay(None);
+            }
             return;
-        };
+        }
+        // Keys: , and . step, / plays.
+        if keys && self.can_change_frames() && !ui.ctx().egui_wants_keyboard_input() {
+            let (back, forward, play) = ui.input(|i| {
+                (
+                    i.key_pressed(Key::Comma),
+                    i.key_pressed(Key::Period),
+                    i.key_pressed(Key::Slash),
+                )
+            });
+            let frame = self.document.frame();
+            let by = i64::from(forward) - i64::from(back);
+            if by != 0 {
+                self.timeline.playback.playing = false;
+                let to = timeline::step(self.document.timeline(), frame, by);
+                self.timeline_action(TimelineAction::GoTo(to));
+            }
+            if play {
+                self.timeline.playback.toggle();
+            }
+        }
+        // Playing.
+        if self.timeline.playback.playing && self.can_change_frames() {
+            let seconds = ui.input(|i| i.stable_dt);
+            if let Some(next) = self.timeline.playback.tick(
+                self.document.timeline(),
+                self.document.frame(),
+                seconds,
+            ) {
+                self.history.go_to_frame(&mut self.document, next);
+            }
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(15));
+        }
+        let action = egui::Panel::bottom("timeline")
+            .resizable(false)
+            .show(ui, |ui| self.timeline.panel(ui, &self.document))
+            .inner;
+        if let Some(action) = action {
+            self.timeline_action(action);
+        }
+        let generation = self.history.generation();
+        self.timeline.refresh(
+            ui.ctx(),
+            &self.document,
+            generation,
+            self.canvas.is_painting(),
+        );
+        if let Some(overlay) = self.timeline.take_overlay(&self.document, generation) {
+            self.canvas.set_overlay(overlay);
+        }
+    }
+
+    fn canvas_overlay_shown(&self) -> bool {
+        self.canvas.has_overlay()
+    }
+
+    /// The thin bars under the menus: "This picture has 8 frames", and
+    /// "These frames come from a script".
+    fn notes(&mut self, ui: &mut egui::Ui) {
+        if let Some(name) = self.from_script.clone() {
+            egui::Panel::top("from_script").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "These frames come from {name}, a painting script. Drawing on them starts a new picture."
+                    ));
+                    if ui.add(theme::primary_button("Edit frames by hand")).clicked() {
+                        self.from_script = None;
+                        self.files.forget_path();
+                        self.history.mark_unsaved();
+                    }
+                });
+            });
+            return;
+        }
+        let count = self.document.frame_count();
+        if self.animation_tools || self.note_closed || !self.document.is_animated() {
+            return;
+        }
+        egui::Panel::top("animation_note").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(if count > 1 {
+                    format!("This picture has {count} frames.")
+                } else {
+                    "This picture is an animation.".to_owned()
+                });
+                if ui.button("Turn on animation tools").clicked() {
+                    self.animation_tools = true;
+                }
+                if ui
+                    .small_button("✕")
+                    .on_hover_text("Hide this note")
+                    .clicked()
+                {
+                    self.note_closed = true;
+                }
+            });
+        });
+    }
+
+    /// The Animation menu (while the tools are on).
+    fn animation_menu(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        let mut action = None;
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.menu_button("Animation", |ui| {
+                let playing = self.timeline.playback.playing;
+                if ui
+                    .add(Button::new(if playing { "Pause" } else { "Play" }).shortcut_text("/"))
+                    .clicked()
+                {
+                    self.timeline.playback.toggle();
+                }
+                let timeline = self.document.timeline();
+                let frame = self.document.frame();
+                if ui
+                    .add(Button::new("Previous frame").shortcut_text(","))
+                    .clicked()
+                {
+                    action = Some(TimelineAction::GoTo(timeline::step(timeline, frame, -1)));
+                }
+                if ui
+                    .add(Button::new("Next frame").shortcut_text("."))
+                    .clicked()
+                {
+                    action = Some(TimelineAction::GoTo(timeline::step(timeline, frame, 1)));
+                }
+                ui.separator();
+                if ui.button("New frame").clicked() {
+                    action = Some(TimelineAction::Add);
+                }
+                if ui.button("Duplicate frame").clicked() {
+                    action = Some(TimelineAction::Duplicate);
+                }
+                if ui
+                    .add_enabled(self.document.frame_count() > 1, Button::new("Delete frame"))
+                    .clicked()
+                {
+                    action = Some(TimelineAction::Delete(frame));
+                }
+                ui.separator();
+                let id = self.document.active_id();
+                let animated = self.document.active_layer().animated();
+                let label = if animated {
+                    "Make this layer still"
+                } else {
+                    "Animate this layer"
+                };
+                let tip = if animated {
+                    "One drawing on every frame: this frame's (Undo brings the others back)"
+                } else {
+                    "A drawing per frame, starting as copies of this one"
+                };
+                if ui.button(label).on_hover_text(tip).clicked() && self.can_change_frames() {
+                    if let Some(step) = AnimatedCommand::set(&mut self.document, id, !animated) {
+                        self.history.push(Box::new(step));
+                    }
+                    ui.close();
+                }
+                ui.checkbox(&mut self.timeline.onion.on, "Onion skin");
+                ui.separator();
+                ui.weak("Export: File → Export animation…");
+            });
+        });
+        if let Some(action) = action {
+            self.timeline_action(action);
+        }
+    }
+
+    /// Carries out File → Export animation's choice, for the frames of
+    /// the picture.
+    fn export_animation(&mut self, frame: &eframe::Frame, choice: AnimationExport) {
+        let name = self.animation_name();
+        let document = &self.document;
         let result = match choice {
             AnimationExport::Sheet => self.files.ask_sheet_path(frame).map(|path| {
-                view.export_sheet(&path)
-                    .map(|json| format!("{} and {}", path.display(), json.display()))
+                let image_name = path.file_name().map_or_else(
+                    || "sheet.png".to_owned(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                document
+                    .sprite_sheet(&name, &image_name, 1)
+                    .and_then(|(sheet, json)| {
+                        sheet
+                            .save_png(&path, true)
+                            .map_err(|e| format!("{}: {e}", path.display()))?;
+                        let json_path = path.with_extension("json");
+                        std::fs::write(&json_path, json)
+                            .map_err(|e| format!("{}: {e}", json_path.display()))?;
+                        Ok(format!("{} and {}", path.display(), json_path.display()))
+                    })
             }),
             AnimationExport::Frames => self.files.ask_frames_folder(frame).map(|folder| {
-                view.export_frames(&folder)
-                    .map(|count| format!("{count} frames in {}", folder.display()))
+                let mut count = 0;
+                let mut result = Ok(());
+                for played in document.animations(&name) {
+                    let images = document.frame_images(&played.frames);
+                    for (n, frame) in played.frames.iter().enumerate() {
+                        let path = folder.join(format!("{}-{n:03}.png", played.name));
+                        if let Err(e) = images[frame].save_png(&path, true) {
+                            result = Err(format!("{}: {e}", path.display()));
+                        }
+                        count += 1;
+                    }
+                }
+                result.map(|()| format!("{count} frames in {}", folder.display()))
             }),
-            AnimationExport::Gif => self
-                .files
-                .ask_gif_path(frame, &view.current().name)
-                .map(|path| view.export_gif(&path).map(|()| path.display().to_string())),
+            AnimationExport::Gif => self.files.ask_gif_path(frame, &name).map(|path| {
+                let played = document
+                    .animations(&name)
+                    .into_iter()
+                    .find(|p| p.frames.contains(&document.frame()))
+                    .unwrap_or_else(|| document.animations(&name).remove(0));
+                let images = document.frame_images(&played.frames);
+                let ticks: Vec<quill_engine::image::Image> =
+                    played.ticks().iter().map(|f| images[f].clone()).collect();
+                save_gif(&ticks, played.fps, played.looping, &path)
+                    .map(|()| path.display().to_string())
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            }),
         };
         match result {
             Some(Ok(what)) => self.files.show_message("Exported", what),
@@ -472,7 +766,10 @@ impl eframe::App for DuckQuill {
         let playing = self.playback.is_some();
         // A transform (or other edit on the canvas) must be finished first.
         let busy = playing || self.canvas.is_editing();
-        let watching = self.animation.is_some();
+        // Frames from a script are looked at, not drawn on, until "Edit
+        // frames by hand".
+        let watching = self.from_script.is_some();
+        self.history.follow(&self.document);
 
         // While a small window like "Save changes?" is open, or a script
         // is playing, shortcuts would act on the picture, so they're ignored.
@@ -521,7 +818,13 @@ impl eframe::App for DuckQuill {
                         ui.close();
                     }
                     ui.checkbox(self.canvas.references_hidden(), "Hide reference pictures");
+                    ui.separator();
+                    ui.checkbox(&mut self.animation_tools, "Animation tools")
+                        .on_hover_text("The timeline and the Animation menu, for drawing frame by frame");
                 });
+                if self.animation_tools {
+                    self.animation_menu(ui, !busy && self.screen == Screen::Canvas);
+                }
                 if add_reference
                     && let Some(path) = rfd::FileDialog::new()
                         .add_filter("Pictures", &["png", "jpg", "jpeg"])
@@ -616,7 +919,7 @@ impl eframe::App for DuckQuill {
         }
 
         // New, open, save, export; asks "Save changes?" when needed.
-        let animation_name = self.animation.as_ref().map(|v| v.current().name.clone());
+        let animation_name = (self.document.frame_count() > 1).then(|| self.animation_name());
         let new_document = self.files.update(
             ui.ctx(),
             frame,
@@ -630,8 +933,10 @@ impl eframe::App for DuckQuill {
             self.history = History::default();
             self.canvas.reset();
             self.canvas.fit_text_size(self.document.height());
-            self.animation = None;
-            self.frame_shown = None;
+            self.new_picture_shown();
+        }
+        if self.files.take_made_animation() {
+            self.animation_tools = true;
         }
         if let Some(choice) = self.files.take_animation_export() {
             self.export_animation(frame, choice);
@@ -646,17 +951,21 @@ impl eframe::App for DuckQuill {
                 player.start_on(&mut self.document)
             };
             if !request.script.animations.is_empty() {
-                // Frames, not strokes: the Animation panel shows them.
-                match AnimationView::new(&request.script, request.folder, request.name) {
-                    Ok(view) => {
-                        self.document = view.document().clone();
+                // Frames, not strokes: shown in the timeline, playing.
+                match bake(&request.script, request.folder) {
+                    Ok(document) => {
+                        self.document = document;
                         self.history = History::default();
                         self.canvas.reset();
-                        self.animation = Some(view);
-                        self.frame_shown = None;
+                        self.new_picture_shown();
+                        self.from_script = Some(request.name);
+                        self.animation_tools = true;
+                        self.timeline.playback.playing = true;
                         self.screen = Screen::Canvas;
                     }
-                    Err(error) => self.files.show_message("Couldn't play the script", error),
+                    Err(error) => self
+                        .files
+                        .show_message("Couldn't play the script", error.to_string()),
                 }
             } else {
                 match started {
@@ -678,8 +987,10 @@ impl eframe::App for DuckQuill {
             }
         }
         self.update_playback(ui);
-        self.update_animation(ui);
-        self.canvas.locked = self.playback.is_some() || watching || self.animation.is_some();
+        self.notes(ui);
+        self.update_timeline(ui, !dialog && !busy && self.screen == Screen::Canvas);
+        self.canvas.locked = self.playback.is_some() || self.from_script.is_some();
+        self.canvas.animation_tools = self.animation_tools;
 
         self.about.ui(ui.ctx());
         if !dialog && !busy {

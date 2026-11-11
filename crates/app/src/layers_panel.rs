@@ -9,6 +9,7 @@
 
 use eframe::egui::{self, Button, Color32, Key, TextEdit, vec2};
 use quill_engine::document::Document;
+use quill_engine::frames::AnimatedCommand;
 use quill_engine::history::History;
 use quill_engine::layer::{BlendMode, LayerId, LayerProps};
 use quill_engine::layer_commands::{LayerPresenceCommand, LayerPropsCommand, MoveLayerCommand};
@@ -31,6 +32,9 @@ pub struct LayersPanel {
     /// While the opacity slider is being used: which layer, and how it was
     /// before, so the whole drag becomes one undo step.
     opacity_edit: Option<(LayerId, LayerProps)>,
+    /// The animation tools are on: each row shows whether its layer is
+    /// animated (a drawing per frame) or still.
+    pub animation_tools: bool,
 }
 
 impl LayersPanel {
@@ -144,7 +148,7 @@ impl LayersPanel {
     /// One row per layer, top layer first (like the stack itself).
     fn layer_list(&mut self, ui: &mut egui::Ui, document: &mut Document, history: &mut History) {
         // Copy what we show first, so we can change the document while drawing.
-        let rows: Vec<(LayerId, String, bool, bool, bool)> = document
+        let rows: Vec<(LayerId, String, bool, bool, bool, bool)> = document
             .layers()
             .iter()
             .rev()
@@ -155,6 +159,7 @@ impl LayersPanel {
                     layer.visible(),
                     layer.clip(),
                     layer.lock(),
+                    layer.animated(),
                 )
             })
             .collect();
@@ -163,7 +168,7 @@ impl LayersPanel {
         let mut dropped: Option<(LayerId, LayerId, bool)> = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (id, name, visible, clip, lock) in rows {
+            for (id, name, visible, clip, lock, animated) in rows {
                 let row = ui.horizontal(|ui| {
                     ui.set_min_height(ROW_HEIGHT);
 
@@ -190,6 +195,23 @@ impl LayersPanel {
                         .clicked()
                     {
                         change_props(document, history, id, |p| p.lock = !lock);
+                    }
+                    // Animated (a drawing per frame) or still.
+                    if self.animation_tools {
+                        let tip = if animated {
+                            "Animated: a drawing on every frame. Click to make it still (one \
+                             drawing on every frame: this frame's; Undo brings the others back)"
+                        } else {
+                            "Still: the same on every frame, like a background. Click to animate \
+                             it (a drawing per frame)"
+                        };
+                        if icon_toggle(ui, animated, draw_film_strip)
+                            .on_hover_text(tip)
+                            .clicked()
+                            && let Some(step) = AnimatedCommand::set(document, id, !animated)
+                        {
+                            history.push(Box::new(step));
+                        }
                     }
                     // Clip to the layer below.
                     let mut clipped = clip;
@@ -432,6 +454,26 @@ fn draw_eye(painter: &egui::Painter, rect: egui::Rect, color: Color32, open: boo
         painter.circle_filled(c, h * 0.75, color);
     } else {
         painter.line_segment([rect.left_bottom(), rect.right_top()], stroke);
+    }
+}
+
+/// A strip of film: filled frames when the layer is animated.
+fn draw_film_strip(painter: &egui::Painter, rect: egui::Rect, color: Color32, animated: bool) {
+    let stroke = egui::Stroke::new(1.5, color);
+    let strip = rect.shrink2(vec2(0.0, 2.0));
+    painter.rect_stroke(strip, 1.5, stroke, egui::StrokeKind::Inside);
+    // Three frames side by side.
+    let w = strip.width() / 3.0;
+    for i in 0..3 {
+        let cell = egui::Rect::from_min_size(
+            strip.min + vec2(w * i as f32 + 1.5, 3.0),
+            vec2(w - 3.0, strip.height() - 6.0),
+        );
+        if animated {
+            painter.rect_filled(cell, 1.0, color);
+        } else if i == 1 {
+            painter.rect_stroke(cell, 1.0, stroke, egui::StrokeKind::Inside);
+        }
     }
 }
 

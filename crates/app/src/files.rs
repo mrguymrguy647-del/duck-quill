@@ -19,6 +19,7 @@ use eframe::egui::{
 };
 use quill_engine::document::{Document, MAX_CANVAS_SIDE};
 use quill_engine::file::{self, Background, FILE_EXTENSION, FileError, OLD_FILE_EXTENSION};
+use quill_engine::frames::{self, SPRITE_ANIMATIONS};
 use quill_engine::history::History;
 use quill_engine::script::{PlayOptions, Player, Script, record};
 
@@ -53,6 +54,8 @@ const NOTICE_TIME: Duration = Duration::from_secs(3);
 #[derive(Clone, Copy, PartialEq)]
 pub enum FileAction {
     New,
+    NewAnimation,
+    NewSprite,
     Open,
     Save,
     /// The sprite sheet, frames or a GIF of the animation shown.
@@ -103,12 +106,23 @@ pub enum AnimationExport {
 #[derive(Clone, Copy, PartialEq)]
 enum Discard {
     New,
+    NewAnimation,
+    NewSprite,
     Open,
     /// Open `Files::pending_open`.
     OpenPath,
     CloseWindow,
     /// Play a script on a new picture of the script's canvas size.
     PlayNew,
+}
+
+/// What File → New makes.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum NewKind {
+    #[default]
+    Picture,
+    Animation,
+    Sprite,
 }
 
 /// An error message shown in a small window until you click OK.
@@ -126,6 +140,15 @@ pub struct Files {
     asking: Option<Discard>,
     /// The New picture window, while it's open: the size typed in so far.
     new_size: Option<[u32; 2]>,
+    /// What the New window makes.
+    new_kind: NewKind,
+    /// New animation: how many frames to start with.
+    new_frames: usize,
+    /// New sprite: which animations to start with (by `SPRITE_ANIMATIONS`).
+    new_sprite_animations: [bool; 4],
+    /// A new animation or sprite was just made: the app turns the
+    /// animation tools on.
+    made_animation: bool,
     /// The size chosen last time, offered again in the New window.
     last_new_size: Option<[u32; 2]>,
     error: Option<ErrorMessage>,
@@ -163,6 +186,8 @@ impl Files {
         let mut chosen = None;
         let entries = [
             ("New…", Some(NEW), FileAction::New),
+            ("New animation…", None, FileAction::NewAnimation),
+            ("New pixel sprite or tile…", None, FileAction::NewSprite),
             ("Open…", Some(OPEN), FileAction::Open),
             ("Save", Some(SAVE), FileAction::Save),
             ("Save as…", Some(SAVE_AS), FileAction::SaveAs),
@@ -352,7 +377,10 @@ impl Files {
             ui.add_space(6.0);
             match animation_name {
                 Some(name) => ui.label(format!("The animation shown is \"{name}\".")),
-                None => ui.label("Open a script with animations first (File → Play strokes…)."),
+                None => ui.label(
+                    "This picture has one frame. Turn on View → Animation tools and add frames \
+                     first (or open a script with animations).",
+                ),
             };
             ui.add_space(12.0);
             let mut chosen = None;
@@ -435,6 +463,12 @@ impl Files {
         {
             match action {
                 FileAction::New => replacement = self.discard(Discard::New, ctx, frame, history),
+                FileAction::NewAnimation => {
+                    replacement = self.discard(Discard::NewAnimation, ctx, frame, history);
+                }
+                FileAction::NewSprite => {
+                    replacement = self.discard(Discard::NewSprite, ctx, frame, history);
+                }
                 FileAction::Open => replacement = self.discard(Discard::Open, ctx, frame, history),
                 FileAction::Save => {
                     self.save(frame, document, history, false);
@@ -510,8 +544,21 @@ impl Files {
         frame: &eframe::Frame,
     ) -> Option<Document> {
         match next {
-            Discard::New => {
-                self.new_size = Some(self.last_new_size.unwrap_or(DEFAULT_SIZE));
+            Discard::New | Discard::NewAnimation | Discard::NewSprite => {
+                self.new_kind = match next {
+                    Discard::NewAnimation => NewKind::Animation,
+                    Discard::NewSprite => NewKind::Sprite,
+                    _ => NewKind::Picture,
+                };
+                self.new_size = Some(match self.new_kind {
+                    NewKind::Sprite => [32, 32],
+                    NewKind::Animation => [800, 600],
+                    NewKind::Picture => self.last_new_size.unwrap_or(DEFAULT_SIZE),
+                });
+                if self.new_frames == 0 {
+                    self.new_frames = 8;
+                    self.new_sprite_animations = [true, true, false, false];
+                }
                 None
             }
             Discard::Open => self.open(frame),
@@ -796,7 +843,9 @@ impl Files {
         }
 
         let question = match next {
-            Discard::New => "before starting a new picture?",
+            Discard::New | Discard::NewAnimation | Discard::NewSprite => {
+                "before starting a new picture?"
+            }
             Discard::Open | Discard::OpenPath => "before opening another picture?",
             Discard::CloseWindow => "before closing?",
             Discard::PlayNew => "before playing the script on a new picture?",
@@ -854,13 +903,109 @@ impl Files {
         }
     }
 
+    /// The picture isn't the file it came from any more (frames from a
+    /// script, now to be drawn on): Save asks where.
+    pub fn forget_path(&mut self) {
+        self.path = None;
+        self.opened_from = None;
+    }
+
+    /// True once after File → New animation or New pixel sprite made a
+    /// picture (the app then turns the animation tools on).
+    pub fn take_made_animation(&mut self) -> bool {
+        std::mem::take(&mut self.made_animation)
+    }
+
+    /// The New pixel sprite or tile window: 16, 32 or 64 pixels, and the
+    /// animations to start with.
+    fn new_sprite_dialog(&mut self, ctx: &egui::Context) -> Option<Document> {
+        let [mut size, _] = self.new_size?;
+        let modal = Modal::new(Id::unique("new_sprite")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading("New pixel sprite or tile");
+            ui.add_space(8.0);
+            ui.label("Size, in pixels:");
+            ui.horizontal(|ui| {
+                for s in [16, 32, 64] {
+                    if ui
+                        .selectable_label(size == s, format!("{s} × {s}"))
+                        .clicked()
+                    {
+                        size = s;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.label("Animations to start with (none: a still tile):");
+            for (i, (name, frames, fps)) in SPRITE_ANIMATIONS.iter().enumerate() {
+                ui.checkbox(
+                    &mut self.new_sprite_animations[i],
+                    format!("{name}: {frames} frames at {fps} fps"),
+                );
+            }
+            ui.add_space(6.0);
+            ui.weak("Each becomes a row of the sprite sheet (File → Export animation).");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let size = vec2(90.0, 30.0);
+                let create = ui
+                    .add(crate::theme::primary_button("Create").min_size(size))
+                    .clicked();
+                let cancel = ui.add(Button::new("Cancel").min_size(size)).clicked();
+                (create, cancel)
+            })
+            .inner
+        });
+        self.new_size = Some([size, size]);
+        let (create, cancel) = modal.inner;
+        if cancel || modal.should_close() {
+            self.new_size = None;
+            return None;
+        }
+        if !create {
+            return None;
+        }
+        self.new_size = None;
+        self.path = None;
+        self.opened_from = None;
+        let chosen: Vec<(&str, usize, f32)> = SPRITE_ANIMATIONS
+            .iter()
+            .zip(self.new_sprite_animations)
+            .filter(|(_, on)| *on)
+            .map(|(a, _)| *a)
+            .collect();
+        if chosen.is_empty() {
+            return Some(Document::new(size, size));
+        }
+        self.made_animation = true;
+        Some(frames::new_sprite(size, &chosen))
+    }
+
     /// The New picture window: choose a size, then Create.
     fn new_dialog(&mut self, ctx: &egui::Context) -> Option<Document> {
+        if self.new_kind == NewKind::Sprite {
+            return self.new_sprite_dialog(ctx);
+        }
+        let animation = self.new_kind == NewKind::Animation;
         let [mut width, mut height] = self.new_size?;
         let modal = Modal::new(Id::unique("new_picture")).show(ctx, |ui| {
             ui.set_width(300.0);
-            ui.heading("New picture");
+            ui.heading(if animation {
+                "New animation"
+            } else {
+                "New picture"
+            });
             ui.add_space(8.0);
+            if animation {
+                ui.horizontal(|ui| {
+                    ui.label("Frames to start with");
+                    ui.add(
+                        egui::DragValue::new(&mut self.new_frames).range(1..=frames::MAX_FRAMES),
+                    );
+                });
+                ui.weak("A still Background layer, and a Drawing layer with a drawing per frame.");
+                ui.add_space(6.0);
+            }
 
             egui::Grid::new("new_picture_size")
                 .num_columns(2)
@@ -910,9 +1055,13 @@ impl Files {
             return None;
         }
         self.new_size = None;
-        self.last_new_size = Some([width, height]);
         self.path = None; // not saved yet
         self.opened_from = None;
+        if animation {
+            self.made_animation = true;
+            return Some(frames::new_animation(width, height, self.new_frames));
+        }
+        self.last_new_size = Some([width, height]);
         Some(Document::new(width, height))
     }
 

@@ -31,6 +31,8 @@ pub struct Settings {
     /// The Presets section is open.
     pub presets_open: Option<bool>,
     pub references_hidden: bool,
+    /// View → Animation tools: the timeline and the Animation menu.
+    pub animation_tools: bool,
 }
 
 /// The window's size (in screen points) when it isn't maximized, and

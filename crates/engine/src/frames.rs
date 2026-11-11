@@ -378,6 +378,173 @@ fn drawing_bytes(surface: &Surface) -> usize {
         * 4
 }
 
+// ---- New animations -------------------------------------------------------------
+
+/// The animations a sprite template can start with: name, frames, fps.
+pub const SPRITE_ANIMATIONS: &[(&str, usize, f32)] = &[
+    ("idle", 4, 6.0),
+    ("run", 8, 12.0),
+    ("jump", 6, 10.0),
+    ("attack", 5, 12.0),
+];
+
+/// A new animation to draw: a still "Background" layer and an animated
+/// "Drawing" layer (selected), with `frames` empty frames.
+pub fn new_animation(width: u32, height: u32, frames: usize) -> Document {
+    let mut document = Document::new(width, height);
+    let background = document.active_id();
+    if let Some(layer) = document.layer_mut(background) {
+        let mut props = layer.props();
+        props.name = "Background".into();
+        layer.set_props(props);
+    }
+    let _ = crate::layer_commands::LayerPresenceCommand::insert_layer(&mut document, "Drawing", 1);
+    let drawing = document.active_id();
+    let _ = AnimatedCommand::set(&mut document, drawing, true);
+    for _ in 1..frames.clamp(1, MAX_FRAMES) {
+        let end = document.frame_count();
+        let _ = FrameCommand::add(&mut document, end);
+    }
+    document.go_to_frame(0);
+    document
+}
+
+/// A new pixel sprite `size` x `size`, with one stretch per animation
+/// chosen (from `SPRITE_ANIMATIONS`), the pivot at the bottom middle and
+/// a see-through background (no paper shows in exports anyway).
+pub fn new_sprite(size: u32, animations: &[(&str, usize, f32)]) -> Document {
+    let total: usize = animations.iter().map(|a| a.1).sum::<usize>().max(1);
+    let mut document = new_animation(size, size, total);
+    let mut start = 0;
+    let mut settings = document.timeline.settings();
+    for &(name, frames, fps) in animations {
+        settings.stretches.push(Stretch {
+            name: name.to_owned(),
+            start,
+            end: start + frames,
+            fps,
+            looping: name != "jump" && name != "attack",
+        });
+        start += frames;
+    }
+    settings.pivot = Some([size as f32 / 2.0, size as f32]);
+    if let Some(first) = animations.first() {
+        settings.fps = first.2;
+    }
+    let _ = TimelineCommand::apply(&mut document, settings);
+    document
+}
+
+// ---- Exporting ------------------------------------------------------------------
+
+/// One animation of a picture with frames: a stretch, or (with no
+/// stretches) the whole timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Played {
+    pub name: String,
+    /// Its frames, in order.
+    pub frames: Vec<usize>,
+    /// Each frame's hold, in the same order.
+    pub holds: Vec<u32>,
+    pub fps: f32,
+    pub looping: bool,
+}
+
+impl Played {
+    /// Its frames with each repeated for its hold: what a GIF or a video
+    /// shows, one per tick of `fps`.
+    pub fn ticks(&self) -> Vec<usize> {
+        self.frames
+            .iter()
+            .zip(&self.holds)
+            .flat_map(|(&frame, &hold)| std::iter::repeat_n(frame, hold.max(1) as usize))
+            .collect()
+    }
+}
+
+impl Document {
+    /// The picture's animations: one per named stretch, in order, or the
+    /// whole timeline called `name` when there are none. Frames outside
+    /// every stretch belong to none.
+    pub fn animations(&self, name: &str) -> Vec<Played> {
+        let timeline = &self.timeline;
+        let holds = |range: std::ops::Range<usize>| -> Vec<u32> {
+            timeline.frames[range].iter().map(|f| f.hold).collect()
+        };
+        if timeline.stretches.is_empty() {
+            let count = self.frame_count();
+            return vec![Played {
+                name: name.to_owned(),
+                frames: (0..count).collect(),
+                holds: holds(0..count),
+                fps: timeline.fps,
+                looping: timeline.looping,
+            }];
+        }
+        timeline
+            .stretches
+            .iter()
+            .map(|s| Played {
+                name: s.name.clone(),
+                frames: (s.start..s.end).collect(),
+                holds: holds(s.start..s.end),
+                fps: s.fps,
+                looping: s.looping,
+            })
+            .collect()
+    }
+
+    /// Where the character stands: the pivot, or the bottom middle.
+    pub fn pivot(&self) -> [f32; 2] {
+        self.timeline
+            .pivot
+            .unwrap_or([self.width() as f32 / 2.0, self.height() as f32])
+    }
+
+    /// Every frame painted, see-through, by number (only those `wanted`).
+    pub fn frame_images(
+        &self,
+        wanted: &[usize],
+    ) -> std::collections::BTreeMap<usize, crate::image::Image> {
+        wanted
+            .iter()
+            .map(|&frame| {
+                let picture = self.frame_picture(frame);
+                let image = crate::image::Image::of_document(
+                    &picture,
+                    crate::document::Background::Transparent,
+                );
+                (frame, image)
+            })
+            .collect()
+    }
+
+    /// The sprite sheet of this picture's animations (`scale` times
+    /// bigger, sharp pixels) and its JSON: the same format as `quill
+    /// export` of a script, a held frame listed once per tick.
+    pub fn sprite_sheet(
+        &self,
+        name: &str,
+        image_name: &str,
+        scale: u32,
+    ) -> Result<(crate::image::Image, String), String> {
+        let animations = self.animations(name);
+        let all: Vec<usize> = animations.iter().flat_map(|a| a.frames.clone()).collect();
+        let images = self.frame_images(&all);
+        let sheet: Vec<crate::sprites::SheetAnimation> = animations
+            .iter()
+            .map(|a| crate::sprites::SheetAnimation {
+                name: a.name.clone(),
+                frames: a.frames.iter().map(|f| images[f].clone()).collect(),
+                fps: a.fps,
+                looping: a.looping,
+                holds: a.holds.clone(),
+            })
+            .collect();
+        crate::sprites::sprite_sheet(&sheet, image_name, self.pivot(), scale)
+    }
+}
+
 // ---- Undoable frame changes ------------------------------------------------------
 
 /// Adding, duplicating, deleting or moving a frame, or changing how long
@@ -1143,6 +1310,84 @@ mod tests {
             .filter(|n| n.as_ref().unwrap().starts_with("frames/"))
             .count();
         assert_eq!(tiles, 1);
+    }
+
+    #[test]
+    fn a_sheet_has_a_row_per_stretch_and_lists_a_held_frame_once_per_tick() {
+        let mut document = animation(5);
+        for frame in 0..5 {
+            document.go_to_frame(frame);
+            document
+                .active_layer_mut()
+                .surface
+                .set_pixel(frame as i32, 0, RED);
+        }
+        FrameCommand::hold(&mut document, 1, 2).unwrap();
+        let settings = TimelineSettings {
+            stretches: vec![
+                Stretch {
+                    name: "idle".into(),
+                    start: 0,
+                    end: 2,
+                    fps: 6.0,
+                    looping: true,
+                },
+                Stretch {
+                    name: "run".into(),
+                    start: 2,
+                    end: 5,
+                    fps: 12.0,
+                    looping: false,
+                },
+            ],
+            pivot: Some([300.0, 280.0]),
+            ..document.timeline().settings()
+        };
+        TimelineCommand::apply(&mut document, settings).unwrap();
+        let played = document.animations("walk");
+        assert_eq!(played[0].ticks(), [0, 1, 1]);
+        let (sheet, json) = document.sprite_sheet("walk", "duck.png", 1).unwrap();
+        assert_eq!((sheet.width(), sheet.height()), (3 * 600, 2 * 300));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["animations"]["idle"]["frames"],
+            serde_json::json!([0, 1, 1])
+        );
+        assert_eq!(
+            value["animations"]["run"]["frames"],
+            serde_json::json!([3, 4, 5])
+        );
+        assert_eq!(value["animations"]["run"]["loop"], false);
+        assert_eq!(value["pivot"], serde_json::json!([300.0, 280.0]));
+        // Cell 4 (row 1, column 1) is frame 3: its dot at x 3.
+        assert_eq!(sheet.pixel(600 + 3, 300)[3], 255);
+        assert_eq!(sheet.pixel(600 + 2, 300)[3], 0);
+        // No stretches: one animation, the whole timeline, by the name given.
+        let plain = animation(2);
+        assert_eq!(plain.animations("walk")[0].name, "walk");
+        assert_eq!(plain.animations("walk")[0].frames, [0, 1]);
+    }
+
+    #[test]
+    fn a_new_sprite_has_a_stretch_per_animation_and_its_pivot_on_the_ground() {
+        let sprite = new_sprite(32, &SPRITE_ANIMATIONS[..2]);
+        assert_eq!((sprite.width(), sprite.frame_count()), (32, 12));
+        let names: Vec<(&str, usize, usize)> = sprite
+            .timeline()
+            .stretches
+            .iter()
+            .map(|s| (s.name.as_str(), s.start, s.end))
+            .collect();
+        assert_eq!(names, [("idle", 0, 4), ("run", 4, 12)]);
+        assert_eq!(sprite.pivot(), [16.0, 32.0]);
+        let layers: Vec<(&str, bool)> = sprite
+            .layers()
+            .iter()
+            .map(|l| (l.name(), l.animated()))
+            .collect();
+        assert_eq!(layers, [("Background", false), ("Drawing", true)]);
+        assert_eq!(sprite.active_layer().name(), "Drawing");
+        assert_eq!(sprite.frame(), 0);
     }
 
     /// The memory the brief worries about: 24 frames of 1024 x 1024 with

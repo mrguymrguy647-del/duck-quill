@@ -378,6 +378,7 @@ pub fn export(options: &ExportOptions) -> Result<(), Problem> {
         let animations: Vec<SheetAnimation> = painted
             .iter()
             .map(|a| SheetAnimation {
+                holds: Vec::new(),
                 name: a.name.clone(),
                 frames: a.frames.clone(),
                 fps: a.fps,

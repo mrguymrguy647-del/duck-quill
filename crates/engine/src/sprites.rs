@@ -19,6 +19,10 @@ pub struct SheetAnimation {
     pub frames: Vec<Image>,
     pub fps: f32,
     pub looping: bool,
+    /// How long each frame is shown, in frames (a hand-drawn animation's
+    /// holds). A frame held 2 is listed twice in the JSON (its picture
+    /// is in the sheet once). Empty: every frame once.
+    pub holds: Vec<u32>,
 }
 
 /// What the JSON file says.
@@ -94,7 +98,10 @@ pub fn sprite_sheet(
                 (column as u32 * width) as i32,
                 (row as u32 * height) as i32,
             );
-            numbers.push(row as u32 * columns + column as u32);
+            let hold = animation.holds.get(column).copied().unwrap_or(1).max(1);
+            for _ in 0..hold {
+                numbers.push(row as u32 * columns + column as u32);
+            }
         }
         entries.push((
             animation.name.as_str(),
@@ -173,12 +180,14 @@ mod tests {
     fn frames_sit_in_rows_and_the_json_says_where() {
         let animations = [
             SheetAnimation {
+                holds: Vec::new(),
                 name: "idle".into(),
                 frames: vec![frame([255, 0, 0, 255]), frame([0, 255, 0, 255])],
                 fps: 8.0,
                 looping: true,
             },
             SheetAnimation {
+                holds: Vec::new(),
                 name: "walk".into(),
                 frames: vec![frame([0, 0, 255, 255]); 3],
                 fps: 12.0,
@@ -212,6 +221,7 @@ mod tests {
     #[test]
     fn scale_enlarges_frames_and_the_pivot_with_sharp_pixels() {
         let animations = [SheetAnimation {
+            holds: Vec::new(),
             name: "a".into(),
             frames: vec![frame([255, 0, 0, 255])],
             fps: 1.0,
@@ -231,6 +241,7 @@ mod tests {
     #[test]
     fn frames_of_different_sizes_are_refused() {
         let animations = [SheetAnimation {
+            holds: Vec::new(),
             name: "a".into(),
             frames: vec![frame([255, 0, 0, 255]), Image::new(5, 3, [0, 0, 0, 0])],
             fps: 1.0,
