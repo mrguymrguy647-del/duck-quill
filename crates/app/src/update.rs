@@ -30,6 +30,45 @@ use sha2::{Digest, Sha256};
 /// Where releases are published.
 pub const RELEASES_API: &str = "https://api.github.com/repos/mrguymrguy647-del/duck-quill/releases";
 pub const RELEASES_PAGE: &str = "https://github.com/mrguymrguy647-del/duck-quill/releases/latest";
+/// Only in builds made for the install test (`release.yml`'s
+/// install-test job), never in a published one: where to ask for releases
+/// (a little server on the test machine) and the version to pretend to be.
+/// Set when compiling, so a published DuckQuill.exe can't be pointed
+/// anywhere else (release.yml checks it doesn't contain the test address).
+pub const TEST_RELEASES: Option<&str> = option_env!("DUCK_QUILL_TEST_RELEASES");
+const TEST_VERSION: Option<&str> = option_env!("DUCK_QUILL_TEST_VERSION");
+
+/// True in a build made for the install test.
+pub fn test_build() -> bool {
+    TEST_RELEASES.is_some()
+}
+
+/// The folder downloads go to (and the updater runs from).
+pub fn download_folder() -> PathBuf {
+    std::env::temp_dir().join("Duck Quill update")
+}
+
+/// In a test build: notes what happened, for the install test to read.
+pub fn test_log(text: &str) {
+    if test_build() {
+        use std::io::Write;
+        let _ = std::fs::create_dir_all(download_folder());
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(download_folder().join("test-log.txt"))
+        {
+            let _ = writeln!(file, "{text}");
+        }
+    }
+}
+
+/// In a test build: the install test asks for an update (check, then
+/// update without a click) by leaving this file. Used up when seen.
+pub fn test_update_asked() -> bool {
+    test_build() && std::fs::remove_file(download_folder().join("update-now")).is_ok()
+}
+
 /// The file next to an installed DuckQuill.exe that says it was installed
 /// by the setup (a portable copy doesn't have it).
 pub const INSTALLED_MARKER: &str = "installed.ini";
@@ -59,7 +98,8 @@ impl Version {
 
     /// The version running.
     pub fn running() -> Version {
-        Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version(0, 0, 0))
+        Version::parse(TEST_VERSION.unwrap_or(env!("CARGO_PKG_VERSION")))
+            .unwrap_or(Version(0, 0, 0))
     }
 }
 
@@ -197,7 +237,10 @@ fn agent() -> ureq::Agent {
 /// Asks GitHub for the releases and picks the newest to offer.
 pub fn check_now() -> Result<Option<Offer>, String> {
     let mut response = agent()
-        .get(format!("{RELEASES_API}?per_page=20"))
+        .get(format!(
+            "{}?per_page=20",
+            TEST_RELEASES.unwrap_or(RELEASES_API)
+        ))
         .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| e.to_string())?;
@@ -253,6 +296,12 @@ pub fn download_and_verify(offer: &Offer, folder: &Path) -> Result<PathBuf, Stri
     if let Err(problem) = verify(&setup, &checksums) {
         let _ = std::fs::remove_file(&setup);
         return Err(problem);
+    }
+    // (Windows runs any .exe; elsewhere a file must be marked runnable.)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&setup, std::fs::Permissions::from_mode(0o755));
     }
     Ok(setup)
 }
@@ -373,8 +422,7 @@ impl Updater {
         self.problem = None;
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
-            let folder = std::env::temp_dir().join("Duck Quill update");
-            let _ = sender.send(download_and_verify(&offer, &folder));
+            let _ = sender.send(download_and_verify(&offer, &download_folder()));
         });
         self.downloading = Some(receiver);
     }
@@ -386,6 +434,7 @@ impl Updater {
         {
             let asked = *asked;
             self.checking = None;
+            test_log(&format!("checked: {result:?}"));
             match result {
                 Ok(offer) => {
                     let answer = match &offer {
@@ -414,8 +463,12 @@ impl Updater {
         {
             self.downloading = None;
             match result {
-                Ok(setup) => return Some(UpdateEvent::Ready(setup)),
+                Ok(setup) => {
+                    test_log(&format!("downloaded and checked {}", setup.display()));
+                    return Some(UpdateEvent::Ready(setup));
+                }
                 Err(problem) => {
+                    test_log(&format!("refused: {problem}"));
                     self.problem = Some(format!("The update didn't download: {problem}."))
                 }
             }
@@ -550,7 +603,8 @@ pub fn apply(job: &Job, say: &dyn Fn(String)) -> Result<String, String> {
         }
         if start.elapsed() > std::time::Duration::from_secs(600) {
             return Err(
-                "Duck Quill or quill.exe was still running after 10 minutes, so nothing was changed"
+                "the update didn't start: Duck Quill or quill.exe was still running after 10 \
+                 minutes, so nothing was changed"
                     .into(),
             );
         }
@@ -643,11 +697,12 @@ pub fn run_updater(job: Job, settings_folder: Option<PathBuf>) -> eframe::Result
         std::thread::spawn(move || {
             let say = |text: String| *status.lock().unwrap() = text;
             let result = apply(&job, &say);
+            let text = match &result {
+                Ok(text) => text.clone(),
+                Err(problem) => sentence(problem),
+            };
+            test_log(&format!("updater: {text}"));
             if let Some(folder) = &settings_folder {
-                let text = match &result {
-                    Ok(text) => text.clone(),
-                    Err(problem) => format!("The update didn't work: {problem}."),
-                };
                 let _ = std::fs::create_dir_all(folder);
                 let _ = std::fs::write(folder.join(RESULT_FILE), text);
             }
@@ -682,6 +737,17 @@ pub fn run_updater(job: Job, settings_folder: Option<PathBuf>) -> eframe::Result
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     })
+}
+
+/// `text` as a sentence: a capital first, a full stop last.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let first = chars
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    let rest = chars.as_str().trim_end_matches('.');
+    format!("{first}{rest}.")
 }
 
 /// What the last update said, once (then it's forgotten).

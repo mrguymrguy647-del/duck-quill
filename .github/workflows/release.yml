@@ -1,4 +1,6 @@
-# Makes the downloads: DuckQuill-<version>-windows.zip for people, and
+# Makes the downloads: DuckQuill-<version>-setup.exe (the installer) and
+# DuckQuill-<version>-windows.zip (the portable copy) for people,
+# SHA256SUMS.txt (each file's fingerprint, which the updater checks), and
 # quill-linux-x86_64.tar.gz for AI agents (quill ready to run on any
 # Linux, with the skill, the docs and the examples, so an agent never
 # has to build it).
@@ -24,9 +26,9 @@ on:
     tags: ["v*"]
     branches: ["**"]
     # Branch pushes only run when the release itself changed (tags always run).
-    paths: [".github/workflows/release.yml", "release/**"]
+    paths: [".github/workflows/release.yml", "release/**", ".github/install-test/**", "crates/app/src/update.rs", "crates/app/src/instance.rs"]
   pull_request:
-    paths: [".github/workflows/release.yml", "release/**"]
+    paths: [".github/workflows/release.yml", "release/**", ".github/install-test/**", "crates/app/src/update.rs", "crates/app/src/instance.rs"]
 
 env:
   RUST_VERSION: "1.97.0"
@@ -64,6 +66,12 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # Code signing happens only once a certificate has been added to the
+      # repository's secrets (Settings -> Secrets and variables -> Actions):
+      # WINDOWS_CERTIFICATE (the .pfx file, base64) and
+      # WINDOWS_CERTIFICATE_PASSWORD. Until then "Windows protected your
+      # PC" appears the first time the setup runs (More info -> Run anyway).
+      HAS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
@@ -75,6 +83,23 @@ jobs:
 
       - name: Build
         run: cargo build --release --workspace
+
+      - name: Sign the programs (only once a certificate is added)
+        if: env.HAS_CERTIFICATE == 'true'
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = "$env:RUNNER_TEMP\certificate.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERTIFICATE))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          & $signtool sign /f $pfx /p $env:CERTIFICATE_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 `
+            target\release\DuckQuill.exe target\release\quill.exe target\release\art-cli.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "SIGNTOOL=$signtool" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PFX=$pfx" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Put the zip together
         shell: bash
@@ -112,11 +137,110 @@ jobs:
           [[ "$ver" == "quill $VERSION" ]]
           "dist/Duck Quill/art-cli.exe" --version
 
+      - name: Make the setup
+        shell: pwsh
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          # Inno Setup (free) is usually on GitHub's Windows machines already.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $arguments = @("/DAppVersion=$env:VERSION", "/DSourceDir=..\dist\Duck Quill")
+          if ($env:HAS_CERTIFICATE -eq 'true') {
+            # Inno Setup signs the setup and its uninstaller with this.
+            $arguments += "/DSign"
+            $arguments += "/Ssigntool=`$q$env:SIGNTOOL`$q sign /f `$q$env:PFX`$q /p `$q$env:CERTIFICATE_PASSWORD`$q /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
+          }
+          & $iscc @arguments release\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $setup = "DuckQuill-$env:VERSION-setup.exe"
+          Move-Item "dist\$setup" .
+          Get-Item $setup | Format-List Name, Length
+          "SETUP=$setup" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Keep the zip on this run's page
         uses: actions/upload-artifact@v5
         with:
           name: windows-zip
           path: ${{ env.ZIP }}
+
+      - name: Keep the setup on this run's page
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-setup
+          path: ${{ env.SETUP }}
+
+      # For the install test below, never published: an "old" Duck Quill
+      # (a test build that says it's 0.0.1 and asks a server on the test
+      # machine for releases instead of GitHub) with its setup, and a setup
+      # of this version that dies halfway on purpose. Made after the zip
+      # and the setup above, from a separate build.
+      - name: Make the install test's files (never published)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $env:DUCK_QUILL_TEST_RELEASES = "http://127.0.0.1:8765/releases"
+          $env:DUCK_QUILL_TEST_VERSION = "0.0.1"
+          cargo build --release -p quill_app
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item Env:DUCK_QUILL_TEST_RELEASES, Env:DUCK_QUILL_TEST_VERSION
+          New-Item -ItemType Directory -Force test-files\old | Out-Null
+          Copy-Item -Recurse "dist\Duck Quill\*" test-files\old\
+          Copy-Item target\release\DuckQuill.exe test-files\old\DuckQuill.exe -Force
+          & $iscc /Q /DAppVersion=0.0.1 "/DSourceDir=..\test-files\old" "/DOutputDir=..\test-files" release\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $iscc /Q "/DAppVersion=$env:VERSION" "/DSourceDir=..\dist\Duck Quill" "/DOutputDir=..\test-files\broken" /DFailHalfway release\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item -Recurse test-files\old
+          Get-ChildItem -Recurse test-files | Format-Table FullName, Length
+
+      - name: Check the published programs can't be pointed at a test server
+        shell: pwsh
+        run: |
+          foreach ($exe in Get-ChildItem "dist\Duck Quill\*.exe") {
+            if (Select-String -Path $exe.FullName -Pattern "127.0.0.1:8765" -SimpleMatch -Quiet) {
+              Write-Host "$($exe.Name) is a test build: it must never be published"; exit 1
+            }
+          }
+          Write-Host "The programs in the zip and the setup are the real ones."
+
+      - name: Keep the install test's files on this run's page
+        uses: actions/upload-artifact@v5
+        with:
+          name: install-test-files
+          path: test-files
+          retention-days: 7
+
+  # Step 5's proof, on a fresh Windows machine every time: install,
+  # double-click a picture, update (wrong fingerprint refused, a setup
+  # dying halfway put right, a good one kept with your settings),
+  # uninstall, and screenshots. A release is only published if it passes.
+  install-test:
+    needs: [version, windows]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: windows-setup
+          path: files
+      - uses: actions/download-artifact@v5
+        with:
+          name: install-test-files
+          path: files
+      - name: Install, double-click, update, uninstall
+        shell: pwsh
+        run: .github/install-test/install-test.ps1 -Version $env:VERSION -Files "$PWD\files"
+      - name: Keep the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: install-test-screenshots
+          path: |
+            screenshots
+            logs
 
   # quill for AI agents on Linux: one file that needs nothing installed
   # (built against musl, so it doesn't depend on the system's libraries),
@@ -185,7 +309,7 @@ jobs:
           path: ${{ env.TARBALL }}
 
   publish:
-    needs: [version, windows, linux]
+    needs: [version, windows, linux, install-test]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -196,13 +320,30 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       TAG: ${{ needs.version.outputs.tag }}
     steps:
+      # Only the downloads (not the install test's files or screenshots).
       - uses: actions/download-artifact@v5
         with:
+          name: windows-setup
           path: downloads
-          merge-multiple: true
+      - uses: actions/download-artifact@v5
+        with:
+          name: windows-zip
+          path: downloads
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux-tarball
+          path: downloads
+      - name: Write down every file's fingerprint
+        run: |
+          # The updater downloads this and refuses a setup whose SHA-256
+          # fingerprint isn't the one listed here.
+          cd downloads
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Publish the release
         run: |
           ls -l downloads
+          setup="DuckQuill-$VERSION-setup.exe"
           zip="DuckQuill-$VERSION-windows.zip"
           if gh release view "$TAG" > /dev/null 2>&1; then
             # Made on the website (or made before): add the files, replacing
@@ -215,7 +356,7 @@ jobs:
             # check) ever sees half a release.
             gh release create "$TAG" downloads/* --draft --target "$GITHUB_SHA" \
               --title "Duck Quill $VERSION" \
-              --notes "Download $zip below, unzip it, and double-click DuckQuill.exe. READ ME FIRST.txt inside says the rest. (quill-linux-x86_64.tar.gz is quill for AI agents on Linux.)"
+              --notes "Download $setup below and double-click it: it installs Duck Quill for your Windows account (no administrator needed) and puts it in the Start menu. Duck Quill updates itself from then on. Or download $zip for a portable copy: unzip it and double-click DuckQuill.exe. (quill-linux-x86_64.tar.gz is quill for AI agents on Linux. SHA256SUMS.txt lists each file's fingerprint.)"
             gh release edit "$TAG" --draft=false
           fi
           echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

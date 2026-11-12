@@ -75,7 +75,7 @@ fn main() -> eframe::Result {
     // The updater's check that a newly installed DuckQuill.exe starts.
     if args.first().is_some_and(|a| a == update::VERSION_TO) {
         if let Some(file) = args.get(1) {
-            let _ = std::fs::write(file, env!("CARGO_PKG_VERSION"));
+            let _ = std::fs::write(file, update::Version::running().to_string());
         }
         return Ok(());
     }
@@ -228,6 +228,8 @@ struct DuckQuill {
     updating: bool,
     /// Answers double-clicks while running.
     instance: Instance,
+    /// The install test asked for an update (test builds only).
+    test_update: bool,
     /// A command chosen on the Home screen, done at the start of the
     /// next frame (with the menus' commands).
     queued: Option<Act>,
@@ -366,6 +368,7 @@ impl DuckQuill {
             installed,
             updating: false,
             instance,
+            test_update: false,
             queued: None,
             #[cfg(feature = "demo")]
             demo: demo::Demo::from_env(),
@@ -898,6 +901,20 @@ impl DuckQuill {
     /// Answers from the update check, and pictures double-clicked while
     /// Duck Quill runs.
     fn updates_and_requests(&mut self, ctx: &egui::Context) {
+        // Only in a build for the install test: it asks for an update by
+        // leaving a file, and it goes ahead as if Update were clicked.
+        if update::test_build() {
+            if !self.updater.is_busy() && update::test_update_asked() {
+                self.test_update = true;
+                self.updater.offer = None;
+                self.updater.check(false);
+            }
+            if self.test_update && !self.updater.is_busy() && self.updater.offer.is_some() {
+                self.test_update = false;
+                self.updater.download();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         match self.updater.poll() {
             Some(UpdateEvent::Answer(text)) => self.files.show_message("Updates", text),
             Some(UpdateEvent::Ready(setup)) => self.install_update(ctx, &setup),
