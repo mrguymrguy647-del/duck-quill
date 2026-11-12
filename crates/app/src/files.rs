@@ -153,6 +153,9 @@ pub struct Files {
     made_animation: bool,
     /// File → Settings was chosen.
     settings_requested: bool,
+    /// A new pixel sprite or tile was just made: the app picks the pixel
+    /// tools (with or without frames).
+    made_pixel: bool,
     /// The size chosen last time, offered again in the New window.
     last_new_size: Option<[u32; 2]>,
     error: Option<ErrorMessage>,
@@ -911,6 +914,11 @@ impl Files {
         }
     }
 
+    /// True once after File → New pixel sprite or tile made a picture.
+    pub fn take_made_pixel(&mut self) -> bool {
+        std::mem::take(&mut self.made_pixel)
+    }
+
     /// True once after File → Settings was chosen.
     pub fn take_settings_request(&mut self) -> bool {
         std::mem::take(&mut self.settings_requested)
@@ -987,6 +995,7 @@ impl Files {
             .filter(|(_, on)| *on)
             .map(|(a, _)| *a)
             .collect();
+        self.made_pixel = true;
         if chosen.is_empty() {
             return Some(Document::new(size, size));
         }

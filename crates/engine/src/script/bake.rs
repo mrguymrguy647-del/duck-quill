@@ -104,7 +104,13 @@ pub fn bake(script: &Script, folder: Option<PathBuf>) -> Result<Document, Script
         }
         layers.push(layer);
     }
-    let active = first.layer_index(first.active_id()).unwrap_or(0);
+    // Drawing by hand goes on the layer selected: the topmost animated
+    // one (the script's own choice may be a still layer, where a stroke
+    // would land on every frame).
+    let active = layers
+        .iter()
+        .rposition(|layer: &Layer| layer.animated())
+        .unwrap_or_else(|| first.layer_index(first.active_id()).unwrap_or(0));
     let count = layers.len() as u64;
     let mut document = Document::from_parts(
         first.width(),
@@ -188,6 +194,8 @@ mod tests {
             .map(|l| (l.name(), l.animated()))
             .collect();
         assert_eq!(layers, [("Sky", false), ("Dot", true)]);
+        // The animated layer is the one selected, ready to draw on.
+        assert_eq!(document.active_layer().name(), "Dot");
         // Each frame is exactly what the script paints for it.
         for (animation, frame, baked) in [("idle", 0, 0), ("idle", 2, 2), ("hop", 1, 4)] {
             let mut player = Player::new(

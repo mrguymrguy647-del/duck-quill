@@ -454,6 +454,7 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
         next_number,
     );
     if let Some(animation) = animation {
+        let count = animation.holds.len();
         document.timeline = crate::frames::Timeline {
             frames: animation
                 .holds
@@ -465,8 +466,22 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Document, FileError> {
             current: animation.current,
             fps: animation.fps.clamp(1.0, 60.0),
             looping: animation.looping,
-            stretches: animation.stretches,
-            pivot: animation.pivot,
+            // A damaged file's stretches are kept to the frames there are.
+            stretches: animation
+                .stretches
+                .into_iter()
+                .map(|mut s| {
+                    s.end = s.end.min(count);
+                    s.fps = if s.fps.is_finite() {
+                        s.fps.clamp(1.0, 60.0)
+                    } else {
+                        12.0
+                    };
+                    s
+                })
+                .filter(|s| s.start < s.end)
+                .collect(),
+            pivot: animation.pivot.filter(|p| p.iter().all(|v| v.is_finite())),
         };
     }
 

@@ -31,12 +31,13 @@ pub fn is_picture(path: &Path) -> bool {
     })
 }
 
-/// The first argument that isn't an option, if it's a picture.
+/// The picture among the arguments, wherever it is (options may come
+/// first: `quill render --frame 2 walk.quill`).
 pub fn picture_argument(args: &[String]) -> Option<PathBuf> {
     args.iter()
-        .find(|a| !a.starts_with("--"))
+        .filter(|a| !a.starts_with("--"))
         .map(PathBuf::from)
-        .filter(|p| is_picture(p))
+        .find(|p| is_picture(p))
 }
 
 fn open(path: &Path) -> Result<Document, Problem> {
@@ -111,8 +112,13 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Options, Problem> {
                 let (a, b) = text.split_once('-').ok_or_else(|| {
                     Problem::Usage(format!("--frames is a range like 0-7, not {text}"))
                 })?;
-                options.frames =
-                    Some((number("--frames", a.into())?, number("--frames", b.into())?));
+                let (first, last) = (number("--frames", a.into())?, number("--frames", b.into())?);
+                if first > last {
+                    return Err(Problem::Usage(format!(
+                        "--frames goes from the first to the last, like 0-7: not {text}"
+                    )));
+                }
+                options.frames = Some((first, last));
             }
             "--all-frames" => options.all_frames = true,
             "--frame-sheet" => options.frame_sheet = true,
@@ -727,6 +733,7 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
     let mut frame = None;
     let mut layer = None;
     let mut out = None;
+    let mut every_frame = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |name: &str| {
@@ -744,6 +751,7 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
             }
             "--layer" => layer = Some(value("--layer")?),
             "--out" => out = Some(PathBuf::from(value("--out")?)),
+            "--every-frame" => every_frame = true,
             flag if flag.starts_with("--") => {
                 return Err(Problem::Usage(format!("unknown option {flag}")));
             }
@@ -759,6 +767,7 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
     let to = to.ok_or_else(|| Problem::Usage("apply needs --to picture.quill".into()))?;
     let mut document = open(&to)?;
     let shown = document.frame();
+    let selected = document.active_id();
     let frame = check_frame(&document, frame.unwrap_or(shown))?;
     document.go_to_frame(frame);
     if let Some(name) = &layer {
@@ -777,6 +786,26 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
         document.set_active(id);
     }
     let target = document.active_layer().name().to_owned();
+    // A still layer is the same on every frame: painting it changes all of
+    // them, which is rarely what "fix frame 3" means.
+    if document.frame_count() > 1 && !document.active_layer().animated() && !every_frame {
+        let animated: Vec<&str> = document
+            .layers()
+            .iter()
+            .filter(|l| l.animated())
+            .map(|l| l.name())
+            .collect();
+        return Err(failed(format!(
+            "layer \"{target}\" is still (the same on every frame), so this would change every \
+             frame. Choose an animated layer with --layer ({}), or add --every-frame if that's \
+             what you want",
+            if animated.is_empty() {
+                "there are none: animate one in the app".to_owned()
+            } else {
+                animated.join(", ")
+            }
+        )));
+    }
     let script = load(&script_path)?;
     let problem = |e: &dyn std::fmt::Display| failed(format!("{}: {e}", script_path.display()));
     let play = PlayOptions {
@@ -824,7 +853,10 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
             .run(&mut document, |_, _| {})
             .map_err(|e| problem(&e))?;
     }
+    // As it was: the frame shown and the layer selected (the owner's next
+    // stroke goes where it went before).
     document.go_to_frame(shown);
+    document.set_active(selected);
     let out = out.unwrap_or_else(|| to.clone());
     file::save(&document, &out)
         .map_err(|e| failed(format!("couldn't save {}: {e}", out.display())))?;
@@ -842,9 +874,11 @@ pub fn apply(args: &[String]) -> Result<(), Problem> {
 pub fn bake(args: &[String]) -> Result<(), Problem> {
     let mut script_path = None;
     let mut out = PathBuf::from("out");
+    let mut replace = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
+            "--replace" => replace = true,
             "--out" => {
                 out = PathBuf::from(
                     rest.next()
@@ -864,6 +898,14 @@ pub fn bake(args: &[String]) -> Result<(), Problem> {
             .map_err(|e| failed(format!("{}: {e}", script_path.display())))?;
     make_out(&out)?;
     let path = out.join(format!("{}.{}", stem(&script_path), file::FILE_EXTENSION));
+    // A baked picture is for drawing on by hand: never bake over one.
+    if path.exists() && !replace {
+        return Err(failed(format!(
+            "{} is already there (it may have been drawn on since): bake into another folder \
+             with --out, or add --replace to put a fresh one in its place",
+            path.display()
+        )));
+    }
     file::save(&document, &path)
         .map_err(|e| failed(format!("couldn't save {}: {e}", path.display())))?;
     say!("Baked {} into {}", script_path.display(), path.display());

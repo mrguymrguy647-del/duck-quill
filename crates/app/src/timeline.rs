@@ -8,9 +8,12 @@
 //! frames. Everything it changes is asked of the app as a
 //! [`TimelineAction`], so it goes through the undo history.
 //!
-//! The frames' little pictures and the onion skin are worked out on a
-//! background thread from a copy of the picture (cheap: the copy shares
-//! every tile), so drawing and stepping never wait for them.
+//! The frames' little pictures and the onion skin are worked out on
+//! background threads (one each, so the onion skin never waits for the
+//! pictures) from a copy of the picture (cheap: the copy shares every
+//! tile), so drawing and stepping never wait for them. A frame's picture
+//! is made again only when what it shows changed: each frame has a
+//! fingerprint of its layers' settings and tiles.
 
 use std::sync::mpsc::{Receiver, channel};
 
@@ -177,17 +180,51 @@ pub fn onion_skin(document: &Document, frames: &[(usize, [u8; 3], f32)]) -> Imag
     skin
 }
 
-/// Work done on the background thread.
+/// Work done on a background thread.
 enum Done {
-    Thumbs(u64, Vec<(usize, ColorImage)>),
+    /// Little pictures: (frame, its fingerprint, the picture).
+    Thumbs(Vec<(usize, u64, ColorImage)>),
     Onion(OnionKey, Image),
 }
 
-/// What an onion skin was made for: frame, picture's generation, settings.
+/// What frame `frame` shows, as one number: the paper, the size, and
+/// each layer's settings and the tiles of its drawing on that frame (a
+/// tile changed by painting is a new tile, so a new number). Cheap: no
+/// pixels are looked at.
+pub fn fingerprint(document: &Document, frame: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (document.width(), document.height()).hash(&mut hasher);
+    let paper = document.paper();
+    (paper.r, paper.g, paper.b).hash(&mut hasher);
+    let current = document.frame();
+    for layer in document.layers() {
+        layer.id().hash(&mut hasher);
+        (
+            layer.visible(),
+            layer.opacity().to_bits(),
+            layer.blend().name(),
+            layer.clip(),
+        )
+            .hash(&mut hasher);
+        let mut tiles: Vec<(i32, i32, usize)> = layer
+            .drawing(frame, current)
+            .tiles_shared()
+            .map(|(c, tile)| (c.x, c.y, std::sync::Arc::as_ptr(tile) as usize))
+            .collect();
+        tiles.sort_unstable();
+        tiles.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// What an onion skin was made for: the frame, what the frames shown in
+/// it hold (their fingerprints, so drawing on the frame shown doesn't
+/// make it again), and the settings.
 #[derive(Clone, Copy, PartialEq)]
 struct OnionKey {
     frame: usize,
-    generation: u64,
+    prints: u64,
     before: usize,
     after: usize,
     strength_percent: u32,
@@ -196,11 +233,14 @@ struct OnionKey {
 pub struct TimelineView {
     pub playback: Playback,
     pub onion: Onion,
-    /// Each frame's little picture, and the picture generation it shows.
+    /// Each frame's little picture, and the fingerprint of what it shows.
     thumbs: Vec<Option<(u64, TextureHandle)>>,
-    /// The picture generation (history) the thumbnails should show.
-    wanted: u64,
-    working: Option<Receiver<Done>>,
+    /// The frames' fingerprints, for the picture generation `checked`.
+    fingerprints: Vec<u64>,
+    checked: u64,
+    /// The background work: the frames' pictures, and the onion skin.
+    thumb_work: Option<Receiver<Done>>,
+    onion_work: Option<Receiver<Done>>,
     /// The onion skin shown, and what it was made for.
     onion_made: Option<OnionKey>,
     onion_image: Option<Image>,
@@ -209,6 +249,8 @@ pub struct TimelineView {
     stretches_open: bool,
     /// Its rows while being edited.
     stretches_edit: Vec<Stretch>,
+    /// The fps while its number is being dragged.
+    fps_edit: Option<f32>,
 }
 
 impl Default for TimelineView {
@@ -217,13 +259,16 @@ impl Default for TimelineView {
             playback: Playback::default(),
             onion: Onion::default(),
             thumbs: Vec::new(),
-            wanted: u64::MAX,
-            working: None,
+            fingerprints: Vec::new(),
+            checked: u64::MAX,
+            thumb_work: None,
+            onion_work: None,
             onion_made: None,
             onion_image: None,
             onion_changed: false,
             stretches_open: false,
             stretches_edit: Vec::new(),
+            fps_edit: None,
         }
     }
 }
@@ -246,21 +291,25 @@ impl TimelineView {
         generation: u64,
         busy: bool,
     ) {
-        // Take in finished work.
-        if let Some(receiver) = &self.working
-            && let Ok(done) = receiver.try_recv()
+        // Take in finished work. (A worker that stopped without an answer
+        // is let go, so the next one can start.)
+        let small = document.width().max(document.height()) <= 256;
+        for done in [take(&mut self.thumb_work), take(&mut self.onion_work)]
+            .into_iter()
+            .flatten()
         {
-            self.working = None;
             match done {
-                Done::Thumbs(made_for, images) => {
-                    for (frame, image) in images {
+                Done::Thumbs(images) => {
+                    for (frame, print, image) in images {
                         if let Some(slot) = self.thumbs.get_mut(frame) {
-                            let texture = ctx.load_texture(
-                                format!("frame-{frame}"),
-                                image,
-                                TextureOptions::LINEAR,
-                            );
-                            *slot = Some((made_for, texture));
+                            // Pixel sprites stay crisp in their little pictures.
+                            let filter = if small {
+                                TextureOptions::NEAREST
+                            } else {
+                                TextureOptions::LINEAR
+                            };
+                            let texture = ctx.load_texture(format!("frame-{frame}"), image, filter);
+                            *slot = Some((print, texture));
                         }
                     }
                 }
@@ -278,15 +327,15 @@ impl TimelineView {
             self.thumbs.resize_with(count, || None);
             self.thumbs.truncate(count);
         }
-        self.wanted = generation;
-        if busy || self.playback.playing || self.working.is_some() {
-            if self.working.is_some() {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            }
+        if self.thumb_work.is_some() || self.onion_work.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
+        if busy || self.playback.playing {
             return;
         }
-        // The onion skin first: it's on the canvas.
-        if let Some(key) = self.wanted_onion(document, generation)
+        // The onion skin: it's on the canvas.
+        if self.onion_work.is_none()
+            && let Some(key) = self.wanted_onion(document, generation)
             && self.onion_made != Some(key)
         {
             let copy = document.clone();
@@ -295,41 +344,59 @@ impl TimelineView {
             std::thread::spawn(move || {
                 let _ = sender.send(Done::Onion(key, onion_skin(&copy, &frames)));
             });
-            self.working = Some(receiver);
+            self.onion_work = Some(receiver);
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        // The frames' pictures: those whose fingerprint changed, the one
+        // shown first, a few at a time.
+        if self.thumb_work.is_some() {
             return;
         }
-        // Then the frames' pictures: the one shown first, a few at a time.
+        if self.checked != generation || self.fingerprints.len() != count {
+            self.fingerprints = (0..count).map(|f| fingerprint(document, f)).collect();
+            self.checked = generation;
+        }
         let current = document.frame();
         let mut stale: Vec<usize> = (0..count)
             .filter(|&f| {
                 self.thumbs[f]
                     .as_ref()
-                    .is_none_or(|(g, _)| *g != generation)
+                    .is_none_or(|(print, _)| *print != self.fingerprints[f])
             })
             .collect();
         if stale.is_empty() {
             return;
         }
         stale.sort_by_key(|&f| (f != current, f.abs_diff(current)));
-        stale.truncate(6);
+        stale.truncate(4);
+        let work: Vec<(usize, u64)> = stale
+            .into_iter()
+            .map(|f| (f, self.fingerprints[f]))
+            .collect();
         let copy = document.clone();
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
-            let images = stale
+            let images = work
                 .into_iter()
-                .map(|frame| (frame, thumbnail(&copy, frame)))
+                .map(|(frame, print)| (frame, print, thumbnail(&copy, frame)))
                 .collect();
-            let _ = sender.send(Done::Thumbs(generation, images));
+            let _ = sender.send(Done::Thumbs(images));
         });
-        self.working = Some(receiver);
+        self.thumb_work = Some(receiver);
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
     }
 
-    fn wanted_onion(&self, document: &Document, generation: u64) -> Option<OnionKey> {
-        (self.onion.on && !self.playback.playing && document.frame_count() > 1).then(|| OnionKey {
+    fn wanted_onion(&self, document: &Document, _generation: u64) -> Option<OnionKey> {
+        if !(self.onion.on && !self.playback.playing && document.frame_count() > 1) {
+            return None;
+        }
+        let frames = onion_frames(document.timeline(), document.frame(), self.onion);
+        let prints = frames.iter().fold(0u64, |acc, (f, _, _)| {
+            acc.rotate_left(7) ^ fingerprint(document, *f) ^ *f as u64
+        });
+        Some(OnionKey {
             frame: document.frame(),
-            generation,
+            prints,
             before: self.onion.before,
             after: self.onion.after,
             strength_percent: (self.onion.strength * 100.0).round() as u32,
@@ -340,7 +407,9 @@ impl TimelineView {
     /// takes it away.
     pub fn take_overlay(&mut self, document: &Document, generation: u64) -> Option<Option<Image>> {
         let wanted = self.wanted_onion(document, generation);
-        if wanted.is_none() && self.onion_made.is_some() {
+        // Off, or made for another frame (or picture): take it away now
+        // rather than show the wrong ghosts while the new one is made.
+        if self.onion_made.is_some() && self.onion_made != wanted {
             self.onion_made = None;
             self.onion_image = None;
             return Some(None);
@@ -399,15 +468,29 @@ impl TimelineView {
                 Some(i) => (settings.stretches[i].fps, settings.stretches[i].looping),
                 None => (settings.fps, settings.looping),
             };
-            let fps_changed = ui
+            // While the number is dragged it changes here only; letting go
+            // makes it one undo step.
+            if let Some(editing) = self.fps_edit {
+                fps = editing;
+            }
+            let response = ui
                 .add(
                     egui::DragValue::new(&mut fps)
                         .range(1.0..=60.0)
                         .speed(0.2)
                         .suffix(" fps"),
                 )
-                .on_hover_text("Frames per second")
-                .changed();
+                .on_hover_text("Frames per second");
+            let fps_changed = if response.dragged() {
+                self.fps_edit = Some(fps);
+                false
+            } else if response.drag_stopped() {
+                self.fps_edit = None;
+                true
+            } else {
+                self.fps_edit = None;
+                response.changed()
+            };
             let loop_changed = ui
                 .checkbox(&mut looping, "Loop")
                 .on_hover_text("Start again after the last frame")
@@ -471,13 +554,24 @@ impl TimelineView {
                             action = Some(TimelineAction::GoTo(frame));
                         }
                         response.dnd_set_drag_payload(frame);
-                        if let Some(from) = response.dnd_release_payload::<usize>()
-                            && *from != frame
-                        {
-                            dropped = Some((*from, frame));
+                        // Dropped on the left half: before this frame; on
+                        // the right half: after it. The line shows which.
+                        let after = ui
+                            .ctx()
+                            .pointer_interact_pos()
+                            .is_some_and(|p| p.x > response.rect.center().x);
+                        if let Some(from) = response.dnd_release_payload::<usize>() {
+                            let to = drop_place(*from, frame, after);
+                            if to != *from {
+                                dropped = Some((*from, to));
+                            }
                         }
                         if response.dnd_hover_payload::<usize>().is_some() {
-                            let x = response.rect.left() - 2.0;
+                            let x = if after {
+                                response.rect.right() + 2.0
+                            } else {
+                                response.rect.left() - 2.0
+                            };
                             ui.painter().vline(
                                 x,
                                 response.rect.y_range(),
@@ -726,12 +820,36 @@ impl TimelineView {
     }
 }
 
-/// The frame `by` steps from `frame`, round and round within its stretch
-/// (or the whole timeline).
+/// Where a frame dragged from `from` and dropped before (or `after`)
+/// frame `target` ends up, counted once it's been taken out.
+pub fn drop_place(from: usize, target: usize, after: bool) -> usize {
+    let place = target + usize::from(after);
+    if place > from { place - 1 } else { place }
+}
+
+/// A finished worker's answer, if any: the worker is let go once it has
+/// answered, or if it stopped without answering.
+fn take(work: &mut Option<Receiver<Done>>) -> Option<Done> {
+    let receiver = work.as_ref()?;
+    match receiver.try_recv() {
+        Ok(done) => {
+            *work = None;
+            Some(done)
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            *work = None;
+            None
+        }
+    }
+}
+
+/// The frame `by` steps from `frame`.
 pub fn step(timeline: &Timeline, frame: usize, by: i64) -> usize {
-    let (start, end, _, _) = timeline.playing_range(frame);
-    let span = (end - start).max(1) as i64;
-    (start as i64 + (frame as i64 - start as i64 + by).rem_euclid(span)) as usize
+    // Through every frame, round from the last to the first: stepping
+    // goes from one stretch into the next (playing stays inside one).
+    let count = timeline.frames().len().max(1) as i64;
+    (frame as i64 + by).rem_euclid(count) as usize
 }
 
 /// A frame's little picture, on the paper.
@@ -819,8 +937,16 @@ mod tests {
             Some(2),
             "round run, at run's fps"
         );
-        assert_eq!(step(&t, 0, -1), 1);
-        assert_eq!(step(&t, 5, 1), 2);
+        // Stepping goes through every frame, from one stretch into the next.
+        assert_eq!(step(&t, 1, 1), 2);
+        assert_eq!(step(&t, 5, 1), 0);
+        assert_eq!(step(&t, 0, -1), 5);
+        // Dropping: before or after the target, wherever it came from.
+        assert_eq!(drop_place(0, 3, false), 2, "before frame 3, once 0 is out");
+        assert_eq!(drop_place(0, 3, true), 3);
+        assert_eq!(drop_place(4, 1, false), 1);
+        assert_eq!(drop_place(4, 1, true), 2);
+        assert_eq!(drop_place(2, 2, true), 2, "on itself: no move");
     }
 
     #[test]

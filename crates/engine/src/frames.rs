@@ -468,8 +468,14 @@ impl Document {
     /// every stretch belong to none.
     pub fn animations(&self, name: &str) -> Vec<Played> {
         let timeline = &self.timeline;
+        let count = self.frame_count();
+        // (Stretches are kept inside the frames when read and changed;
+        // this keeps a bad one from ever reaching past them.)
         let holds = |range: std::ops::Range<usize>| -> Vec<u32> {
-            timeline.frames[range].iter().map(|f| f.hold).collect()
+            timeline.frames[range.start.min(count)..range.end.min(count)]
+                .iter()
+                .map(|f| f.hold)
+                .collect()
         };
         if timeline.stretches.is_empty() {
             let count = self.frame_count();
@@ -486,7 +492,7 @@ impl Document {
             .iter()
             .map(|s| Played {
                 name: s.name.clone(),
-                frames: (s.start..s.end).collect(),
+                frames: (s.start.min(count)..s.end.min(count)).collect(),
                 holds: holds(s.start..s.end),
                 fps: s.fps,
                 looping: s.looping,
@@ -1520,6 +1526,60 @@ mod tests {
                 .references()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn a_damaged_files_stretches_are_kept_to_its_frames() {
+        // A stretch from frame 2 to 9 (of 4) and fps 0, as a damaged or
+        // hand-edited file might have: it opens, trimmed, and exports.
+        let mut document = animation(4);
+        let mut settings = document.timeline().settings();
+        settings.stretches = vec![Stretch {
+            name: "walk".into(),
+            start: 2,
+            end: 4,
+            fps: 8.0,
+            looping: true,
+        }];
+        TimelineCommand::apply(&mut document, settings).unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        crate::file::write_document(&document, &mut bytes).unwrap();
+        // Rewrite document.json with the bad stretch.
+        bytes.set_position(0);
+        let mut archive = zip::ZipArchive::new(bytes).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+            if name == "document.json" {
+                let text = String::from_utf8(data).unwrap();
+                let text = text
+                    .replace("\"end\": 4", "\"end\": 9")
+                    .replace("\"fps\": 8.0", "\"fps\": 0.0");
+                assert!(text.contains("\"end\": 9"), "{text}");
+                data = text.into_bytes();
+            }
+            out.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut out, &data).unwrap();
+        }
+        let mut damaged = out.finish().unwrap();
+        damaged.set_position(0);
+        let opened = crate::file::read_document(damaged).unwrap();
+        let s = &opened.timeline().stretches[0];
+        assert_eq!((s.start, s.end), (2, 4));
+        assert!(s.fps >= 1.0);
+        let (_, json) = opened.sprite_sheet("walk", "walk.png", 1).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["animations"]["walk"]["frames"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
     }
 

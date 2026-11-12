@@ -2199,6 +2199,23 @@ fn quill_checks_renders_and_exports_a_hand_drawn_animation() {
     ]);
     assert_eq!(code, Some(1));
     assert!(err.contains("no layer called \"Nope\""), "{err}");
+    // A still layer would change every frame: refused unless asked for.
+    let fix_path = fix.to_str().unwrap();
+    let (code, _, err) = run(&[
+        "apply", fix_path, "--to", path, "--frame", "1", "--layer", "Layer 1",
+    ]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("is still (the same on every frame)"), "{err}");
+    assert!(err.contains("--layer (Layer 2)"), "{err}");
+    // The layer selected before is still the one selected after.
+    let selected = quill_engine::file::open(&walk).unwrap();
+    assert_eq!(selected.active_layer().name(), "Layer 2");
+    // Options may come before the picture.
+    let (code, _, err) = run(&["render", "--frame", "1", "--out", out_dir, path]);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, _, err) = run(&["critique", path, "--frames", "3-1"]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("like 0-7"), "{err}");
     let _ = std::fs::remove_dir_all(out);
 }
 
@@ -2221,6 +2238,14 @@ fn quill_bakes_a_script_animation_into_frames_and_applies_pixel_fixes() {
     assert!(text.contains("10 frames"), "{text}");
     assert!(text.contains("stretches: idle frames 0-3"), "{text}");
     let baked = out.join("duck-pixel.quill");
+    // Baking again doesn't replace a picture that may have been drawn on.
+    let again = quill()
+        .args(["bake", pixel.to_str().unwrap(), "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&again.stderr).contains("--replace"));
     let document = quill_engine::file::open(&baked).unwrap();
     assert_eq!((document.width(), document.frame_count()), (32, 10));
     // A pixel fix lands as whole pixels on the frame asked for.

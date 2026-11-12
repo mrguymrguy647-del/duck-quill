@@ -421,9 +421,19 @@ impl DuckQuill {
             TimelineAction::Add | TimelineAction::Duplicate => {
                 let shown = document.frame();
                 let mut steps: Vec<Box<dyn quill_engine::history::Command>> = Vec::new();
-                // The first extra frame of a plain picture: the layer
-                // you're on becomes animated (the others stay still).
+                // The first extra frame of a plain picture: what's drawn
+                // so far stays still (a background, on every frame), and a
+                // new animated "Drawing" layer above it is selected, for
+                // the frames. (A layer can be animated instead with the
+                // film-strip mark in the Layers panel.)
                 if document.frame_count() == 1 && !document.layers().iter().any(|l| l.animated()) {
+                    let index = document
+                        .layer_index(document.active_id())
+                        .map_or(document.layers().len(), |i| i + 1);
+                    let added = quill_engine::layer_commands::LayerPresenceCommand::insert_layer(
+                        document, "Drawing", index,
+                    );
+                    steps.push(Box::new(added));
                     let id = document.active_id();
                     if let Some(step) = AnimatedCommand::set(document, id, true) {
                         steps.push(Box::new(step));
@@ -563,9 +573,13 @@ impl DuckQuill {
             egui::Panel::top("from_script").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
-                        "These frames come from {name}, a painting script. Drawing on them starts a new picture."
+                        "These frames come from {name}, a painting script. To draw on them, click \
+                         Edit frames by hand (a new picture; the script stays as it is)."
                     ));
-                    if ui.add(theme::primary_button("Edit frames by hand")).clicked() {
+                    if ui
+                        .add(theme::primary_button("Edit frames by hand"))
+                        .clicked()
+                    {
                         self.from_script = None;
                         self.files.forget_path();
                         self.history.mark_unsaved();
@@ -651,7 +665,10 @@ impl DuckQuill {
                 } else {
                     "A drawing per frame, starting as copies of this one"
                 };
-                if ui.button(label).on_hover_text(tip).clicked() && self.can_change_frames() {
+                if ui.button(label).on_hover_text(tip).clicked()
+                    && self.can_change_frames()
+                    && self.from_script.is_none()
+                {
                     if let Some(step) = AnimatedCommand::set(&mut self.document, id, !animated) {
                         self.history.push(Box::new(step));
                     }
@@ -995,10 +1012,10 @@ impl eframe::App for DuckQuill {
         self.settings_window(ui.ctx());
         if self.files.take_made_animation() {
             self.animation_tools = true;
-            // A pixel sprite or tile: the pixel tools.
-            if self.document.width().max(self.document.height()) <= 128 {
-                self.canvas.use_pixel_tools();
-            }
+        }
+        // A pixel sprite or tile (with frames or a still tile): the pixel tools.
+        if self.files.take_made_pixel() {
+            self.canvas.use_pixel_tools();
         }
         if let Some(choice) = self.files.take_animation_export() {
             self.export_animation(frame, choice);

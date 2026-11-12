@@ -1256,7 +1256,13 @@ impl CanvasView {
             ui.separator();
             ui.label(format!("Canvas {} × {}", document.width(), document.height()));
             ui.separator();
-            ui.label(format!("Tiles in memory: {}", document.tile_count()));
+            if document.frame_count() > 1 {
+                // Every frame's drawing, each shared tile once.
+                let megabytes = document.pixel_memory() as f64 / (1024.0 * 1024.0);
+                ui.label(format!("Pixels in memory: {megabytes:.0} MB, all frames"));
+            } else {
+                ui.label(format!("Tiles in memory: {}", document.tile_count()));
+            }
             ui.separator();
             let megabytes = history.memory_used() as f64 / (1024.0 * 1024.0);
             ui.label(format!("Undo steps: {} ({megabytes:.0} MB)", history.undo_steps()));

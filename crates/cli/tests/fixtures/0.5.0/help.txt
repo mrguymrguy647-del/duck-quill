@@ -23,11 +23,14 @@ USAGE
                                            --frames a-b). Frames count from 0
   quill apply <fix.json> --to <picture.quill> --frame n [--layer name]
                                            paint a script onto one frame of a
-                                           picture (on that layer) and save it
-                                           (--out other.quill to keep the first)
+                                           picture (on an animated layer; a
+                                           still one needs --every-frame) and
+                                           save it in place (--out other.quill
+                                           to keep the first as it was)
   quill bake <script.json>                 a script's animations as a picture
                                            with frames (<name>.quill), to draw on
-                                           in the app
+                                           in the app (--replace to bake over
+                                           one that's there)
   quill info <picture.quill>               describe a saved picture: its layers
   quill info <script.json>                 the same for the picture a script
                                            paints, with the commands that
