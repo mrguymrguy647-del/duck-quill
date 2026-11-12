@@ -31,6 +31,16 @@ WHAT'S IN THIS FOLDER
   brand\           the Duck Quill icon
 
 
+DRAWING AN ANIMATION
+  View > Animation tools turns on the timeline at the bottom (and off
+  again: nothing you drew is lost). File > New animation starts one: a
+  Background layer that's the same on every frame, and a Drawing layer
+  with a drawing per frame. Keys: , and . go back and forward a frame,
+  / plays. Tick "Onion skin" to see the frames before (red) and after
+  (blue). File > New pixel sprite or tile starts a small sprite with the
+  Pixel pencil. File > Export animation saves a GIF or a sprite sheet.
+
+
 A NEW VERSION
   Download the new zip, unzip it, and replace this folder with it. Your
   pictures are wherever you saved them, never in this folder, so they
