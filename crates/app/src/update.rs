@@ -757,6 +757,10 @@ pub fn run_updater(job: Job, settings_folder: Option<PathBuf>) -> eframe::Result
                 .args(job.reopen.iter().filter(|p| p.exists()))
                 .spawn();
             *done.lock().unwrap() = Some(result);
+            // The window closes itself when it's next drawn; if it's
+            // hidden it may never be, so the updater stops anyway.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::process::exit(0);
         });
     }
     let options = eframe::NativeOptions {

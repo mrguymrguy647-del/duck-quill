@@ -941,6 +941,12 @@ impl DuckQuill {
                 self.screen = Screen::Canvas;
             }
         }
+        // Opening it happens in a frame: have one even if the window is
+        // still hidden.
+        if self.files.has_queued_open() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+            ctx.request_repaint();
+        }
         if self.instance.answers() {
             ctx.request_repaint_after(instance::LOOK_EVERY);
         }
@@ -1045,6 +1051,25 @@ impl DuckQuill {
 }
 
 impl eframe::App for DuckQuill {
+    /// Runs before every frame, and also while the window is minimized or
+    /// covered (when `ui` doesn't run): the update check, and pictures
+    /// double-clicked meanwhile, mustn't wait for the window to be seen.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.updates_and_requests(ctx);
+        // Closed while minimized (from the taskbar, say) with unsaved
+        // work: show the window, so "Save changes?" can ask.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.history.is_modified()
+            && !self.files.is_closing()
+            && !ctx.input(|i| i.viewport().visible().unwrap_or(true))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+        }
+    }
+
     fn on_exit(&mut self) {
         if self.updating {
             // Closing for an update: the copy of unsaved work stays, to
@@ -1198,7 +1223,6 @@ impl eframe::App for DuckQuill {
         if edit_action.is_some() || layer_action.is_some() {
             self.screen = Screen::Canvas;
         }
-        self.updates_and_requests(ui.ctx());
 
         // Text being typed is finished first (it becomes an undo step, and
         // what's saved or played includes it).

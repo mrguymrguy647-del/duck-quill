@@ -276,6 +276,16 @@ impl Files {
         self.remember(path);
     }
 
+    /// Closing was agreed to (or asked for by an update).
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    /// A picture is waiting to be opened.
+    pub fn has_queued_open(&self) -> bool {
+        self.queued_open.is_some()
+    }
+
     /// The picture just saved, once.
     pub fn take_saved(&mut self) -> Option<PathBuf> {
         self.saved.take()
