@@ -17,18 +17,34 @@ and rotate the canvas, and save, open and export your pictures. The pen test is 
 ## Download
 
 1. Go to [the Releases page](https://github.com/mrguymrguy647-del/duck-quill/releases/latest) and
-   download `DuckQuill-<version>-windows.zip`.
-2. Unzip it (right-click → **Extract All**).
-3. Double-click `DuckQuill.exe`. The first time, Windows may say "Windows protected your PC": click
-   **More info**, then **Run anyway** (the program isn't signed with a paid certificate yet).
+   download `DuckQuill-<version>-setup.exe`.
+2. Double-click it. It installs Duck Quill for your Windows account only (no administrator needed),
+   puts it in the Start menu, and makes `.quill` pictures open in it. Tick boxes add a desktop icon
+   and let terminals and AI agents find `quill.exe`.
+3. The first time, Windows may say "Windows protected your PC": click **More info**, then **Run
+   anyway**. That's because the setup isn't signed with a paid certificate yet, not because
+   something is wrong.
 
-`Create desktop shortcut.bat` in the same folder puts a Duck Quill icon on your desktop, and
-`READ ME FIRST.txt` says the rest. To update, download the new zip and replace the folder: your
-pictures are wherever you saved them.
+**Updates:** Duck Quill says when a newer version is out; **Update** downloads it, checks its
+SHA-256 fingerprint against the one published with the release (and refuses it if they differ),
+installs it and opens Duck Quill again with your picture. If the setup fails, the version you had
+is put back. The check only asks GitHub for the newest version's number. **Uninstall** from Windows
+Settings → Apps; your pictures and settings (`%APPDATA%\Duck Quill`) are never deleted.
+
+**Portable copy:** `DuckQuill-<version>-windows.zip` runs without installing: unzip it and
+double-click `DuckQuill.exe` (`Create desktop shortcut.bat` adds a desktop icon). It offers a
+Download link when a new version is out.
+
+**From 0.5.0** (which had no updater): run the setup once, then delete the old unzipped folder and
+its desktop shortcut. Settings, presets and recent files carry over.
 
 **Making a release** (no terminal): raise `version` in `Cargo.toml` (open it on GitHub and click
-the pencil), then **Actions → Release → Run workflow** on `main`. A few minutes later the new zip is
-on the Releases page. If that version was already released, its zip is replaced.
+the pencil), then **Actions → Release → Run workflow** on `main`. The setup is tested on a fresh
+Windows machine first (installing, updating, uninstalling); only then is the release published,
+with the setup, the zip, quill for Linux and `SHA256SUMS.txt`. To sign the programs (and stop the
+"Windows protected your PC" message), add a code-signing certificate as the repository secrets
+`WINDOWS_CERTIFICATE` (the .pfx file, base64) and `WINDOWS_CERTIFICATE_PASSWORD`; the release
+signs everything from then on.
 
 ## Build it yourself on Windows (no terminal needed)
 
@@ -163,8 +179,8 @@ Build it with `cargo build --release -p quill_cli`; the program is `target/relea
 duck-quill/
 ├── Cargo.toml            workspace: the three crates below, and the version number
 ├── brand/                the Duck Quill icon, mascot and logos (see brand/README.md)
-├── release/              what goes in the download zip besides the programs
-├── .github/workflows/    CI (build and test on every push) and the release zip
+├── release/              the setup script (installer.iss) and what goes in the downloads
+├── .github/workflows/    CI (build and test on every push) and the release (setup, zip, install test)
 ├── run.bat / test.bat / create-shortcut.bat / render-script.bat
 ├── examples/             example scripts: paintings, duck sheets, animated and pixel ducks, a video title
 ├── docs/QUICKSTART.md    start here: a first script and how to render it, on one page

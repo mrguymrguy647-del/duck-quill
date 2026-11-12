@@ -3,15 +3,20 @@ Draw, paint and animate, with a pen or with a script.
 
 
 TO START
-  Double-click DuckQuill.exe.
+  Installed with DuckQuill-<version>-setup.exe: Duck Quill is in the
+  Start menu, and double-clicking a .quill picture opens it.
+
+  From the zip (the portable copy): double-click DuckQuill.exe. For a
+  desktop icon, double-click "Create desktop shortcut.bat", and keep
+  this folder where it is afterwards: the shortcut points into it.
 
   The first time, Windows may say "Windows protected your PC". That's
   because the program isn't signed with a (paid) certificate yet, not
   because something is wrong. Click "More info", then "Run anyway".
   Windows only asks once.
 
-  For a desktop icon, double-click "Create desktop shortcut.bat".
-  Keep this folder where it is afterwards: the shortcut points into it.
+  Duck Quill opens on its Home page: new pictures, your recent ones,
+  and any unsaved work from last time. Ctrl+K finds any command by name.
 
 
 WITH A PEN TABLET
@@ -42,9 +47,23 @@ DRAWING AN ANIMATION
 
 
 A NEW VERSION
-  Download the new zip, unzip it, and replace this folder with it. Your
-  pictures are wherever you saved them, never in this folder, so they
-  are safe. Run "Create desktop shortcut.bat" again if you moved it.
+  Installed: Duck Quill says when a new version is out ("Update" at the
+  top). One click downloads it, checks it's exactly the file that was
+  published, and installs it; Duck Quill opens again with your picture.
+  If anything goes wrong, the version you had is put back. Help > Check
+  for updates asks straight away. (It only asks GitHub for the newest
+  version's number: nothing about you or your pictures is sent.)
+
+  Portable copy: "Download" opens the Releases page. Download the new
+  zip, unzip it, and replace this folder with it.
+
+  Moving from 0.5.0 (which has no updater): run the setup once, then
+  delete the old unzipped folder and its desktop shortcut. Your
+  settings, presets and recent pictures carry over.
+
+  Your pictures are wherever you saved them, never in the program's
+  folder, so they are safe either way. Uninstalling (Windows Settings >
+  Apps) never deletes them, or your settings.
 
 
 Pictures made with Art App (the old name, .artapp files) open in Duck
