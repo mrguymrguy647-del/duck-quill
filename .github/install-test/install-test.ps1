@@ -85,6 +85,19 @@ function Serve([string] $setup, [string] $sums) {
   Copy-Item $setup "$Here\server\p\DuckQuill-$Version-setup.exe" -Force
   Set-Content "$Here\server\p\SHA256SUMS.txt" $sums -NoNewline
 }
+# When the update part goes wrong: what the test machine can say about it.
+function Diagnose {
+  Write-Host "  -- what's in $U :"
+  Get-ChildItem $U -ErrorAction SilentlyContinue | Format-Table Name, Length, LastWriteTime | Out-String | Write-Host
+  Write-Host "  -- every test-log.txt on the machine:"
+  Get-ChildItem -Path 'C:\Users', 'C:\Windows\Temp', 'C:\Windows\SystemTemp', 'D:\a\_temp' -Recurse -Filter 'test-log.txt' -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Host "  $($_.FullName):"; Get-Content $_.FullName | ForEach-Object { Write-Host "    $_" } }
+  Write-Host "  -- the server's log:"
+  Get-Content "$Logs\server.log" -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "    $_" }
+  Write-Host "  -- the installed DuckQuill.exe is a test build: $(Select-String -Path "$App\DuckQuill.exe" -Pattern '127.0.0.1:8765' -SimpleMatch -Quiet)"
+  Write-Host "  -- TEMP=$env:TEMP TMP=$env:TMP"
+  Get-Process DuckQuill* -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, MainWindowTitle, Path | Out-String | Write-Host
+}
 function Sums-Of([string] $file) {
   "$((Get-FileHash $file -Algorithm SHA256).Hash.ToLower())  DuckQuill-$Version-setup.exe`n"
 }
@@ -146,7 +159,13 @@ Check (@(Get-Process DuckQuill -ErrorAction SilentlyContinue).Count -eq 1) "and 
 
 Step "Update 1: the download doesn't match the published fingerprint"
 Ask-For-Update
+Check (Wait-For "the start" { (Test-Log) -match 'started' } 30) "the test build of Duck Quill writes its log"
 Check (Wait-For "the answer" { (Test-Log) -match 'refused:' }) "the update is refused"
+if (-not ((Test-Log) -match 'refused:')) {
+  Diagnose
+  Write-Host "The update part can't go on without its log; stopping here."
+  exit 1
+}
 Write-Host ((Test-Log) -split "`n" | Select-String 'refused:')
 Check (-not (Test-Path "$U\DuckQuill-$Version-setup.exe")) "the download is deleted"
 Check (-not (Test-Path "$U\old version")) "nothing was installed"

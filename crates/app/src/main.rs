@@ -340,6 +340,11 @@ impl DuckQuill {
             files.show_message("Update", text);
         }
         let installed = update::program_folder().is_some_and(|f| update::is_installed(&f));
+        update::test_log(&format!(
+            "started {} (installed: {installed}, folder for downloads: {})",
+            update::Version::running(),
+            update::download_folder().display()
+        ));
         let home_at_start = !settings.home_off;
         let updates_at_start = !settings.update_check_off;
         Self {
