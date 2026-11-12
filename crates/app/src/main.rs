@@ -11,11 +11,14 @@ mod autosave;
 mod brush_panel;
 mod canvas_view;
 mod color_panel;
+mod commands;
 #[cfg(feature = "demo")]
 mod demo;
 mod edit;
 mod files;
 mod filter_tool;
+mod home;
+mod instance;
 mod layers_panel;
 mod paint_tool;
 mod pen_input;
@@ -33,14 +36,19 @@ mod theme;
 mod thumbnails;
 mod timeline;
 mod transform_tool;
+mod update;
 
-use eframe::egui::{self, Button, Key, KeyboardShortcut, Modifiers};
+use edit::EditAction;
+use eframe::egui::{self, Button};
 use quill_engine::document::Document;
 use quill_engine::history::History;
 
 use canvas_view::CanvasView;
+use commands::{Act, AppAct, Menu};
 use files::{AnimationExport, DEFAULT_SIZE, Files};
 use filter_tool::FilterTool;
+use home::{Home, HomeAction};
+use instance::{Instance, Start};
 use pen_input::PenInput;
 use pen_test::PenTestScreen;
 use playback::{BarAction, Playback};
@@ -49,7 +57,7 @@ use quill_engine::gif::save_gif;
 use quill_engine::history::CommandGroup;
 use quill_engine::script::bake::bake;
 use timeline::{TimelineAction, TimelineView};
-use transform_tool::layer_menu;
+use update::{UpdateEvent, Updater};
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -63,6 +71,41 @@ use shortcut_sheet::ShortcutSheet;
 const SETTINGS_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn main() -> eframe::Result {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // The updater's check that a newly installed DuckQuill.exe starts.
+    if args.first().is_some_and(|a| a == update::VERSION_TO) {
+        if let Some(file) = args.get(1) {
+            let _ = std::fs::write(file, env!("CARGO_PKG_VERSION"));
+        }
+        return Ok(());
+    }
+    let folder = settings_folder::settings_folder();
+    // Started as the updater (a copy of DuckQuill.exe in the temporary
+    // folder): install the update, then open Duck Quill again.
+    if args.first().is_some_and(|a| a == update::APPLY_UPDATE) {
+        return match update::Job::from_args(&args[1..]) {
+            Some(job) => update::run_updater(job, folder),
+            None => Ok(()),
+        };
+    }
+    let new_window = args.iter().any(|a| a == NEW_WINDOW);
+    let pictures: Vec<PathBuf> = args
+        .iter()
+        .filter(|a| *a != NEW_WINDOW)
+        .map(PathBuf::from)
+        .collect();
+    // One Duck Quill answers double-clicks: if one is running, it opens
+    // the picture (and comes to the front) and this one stops here.
+    let test_run = std::env::var_os("QUILL_DEMO").is_some();
+    let instance = if test_run {
+        Instance::alone()
+    } else {
+        match Instance::start(folder.as_deref(), &pictures, new_window) {
+            Start::Running(instance) => instance,
+            Start::HandedOver => return Ok(()),
+        }
+    };
+
     let pen_input = PenInput::default();
 
     // The window and taskbar icon. (DuckQuill.exe's own icon, the one File
@@ -72,7 +115,6 @@ fn main() -> eframe::Result {
             .expect("brand/duck-quill-icon-256.png should be a valid PNG file");
 
     // What was remembered from last time (or the defaults).
-    let folder = settings_folder::settings_folder();
     let settings = Settings::load(folder.as_deref());
     // Painting needs room: start maximized, unless it was left smaller.
     let place = settings.window.unwrap_or(WindowPlace {
@@ -103,14 +145,26 @@ fn main() -> eframe::Result {
             ctx.set_theme(theme::from_name(settings.theme.as_deref()));
             theme::apply_brand(ctx);
             pen_input.set_egui_context(ctx);
-            Ok(Box::new(DuckQuill::new(pen_input, settings, folder)))
+            Ok(Box::new(DuckQuill::new(
+                pen_input,
+                settings,
+                folder,
+                pictures.first().cloned(),
+                instance,
+                test_run,
+            )))
         }),
     )
 }
 
+/// `DuckQuill.exe --new-window`: another window, even though Duck Quill
+/// is running (File → New window).
+const NEW_WINDOW: &str = "--new-window";
+
 /// The screens you can switch between in the top bar.
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
+    Home,
     Canvas,
     PenTest,
 }
@@ -161,13 +215,36 @@ struct DuckQuill {
     /// When the settings were last saved (they're saved now and then, so
     /// a crash doesn't forget the brush).
     settings_saved: Instant,
+    /// Ctrl+K.
+    search: commands::Search,
+    home: Home,
+    /// Settings → Show Home at start, and Check for updates at start.
+    home_at_start: bool,
+    updates_at_start: bool,
+    updater: Updater,
+    /// Duck Quill was installed by the setup (not unzipped).
+    installed: bool,
+    /// Closing for an update: the autosaved copy is kept, to come back.
+    updating: bool,
+    /// Answers double-clicks while running.
+    instance: Instance,
+    /// A command chosen on the Home screen, done at the start of the
+    /// next frame (with the menus' commands).
+    queued: Option<Act>,
     /// The test driver (see `demo.rs`), in builds made for it.
     #[cfg(feature = "demo")]
     demo: Option<demo::Demo>,
 }
 
 impl DuckQuill {
-    fn new(pen_input: PenInput, settings: Settings, settings_folder: Option<PathBuf>) -> Self {
+    fn new(
+        pen_input: PenInput,
+        settings: Settings,
+        settings_folder: Option<PathBuf>,
+        argument: Option<PathBuf>,
+        instance: Instance,
+        test_run: bool,
+    ) -> Self {
         // `DuckQuill.exe picture.quill` opens that picture, and
         // `DuckQuill.exe script.json` plays that painting script on a new
         // picture. That's also how Windows starts us for "Open with".
@@ -177,7 +254,7 @@ impl DuckQuill {
         files.set_recent(settings.recent_files.clone());
         let mut playback = None;
         let mut from_script = None;
-        let argument = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+        let opened_a_file = argument.is_some();
         let document = match argument {
             Some(path)
                 if path
@@ -238,6 +315,24 @@ impl DuckQuill {
         let animation_tools = settings.animation_tools || from_script.is_some();
         let mut timeline = TimelineView::default();
         timeline.playback.playing = from_script.is_some();
+        // Home at start, unless a picture was opened by double-clicking
+        // it (or Home is switched off).
+        let screen = if opened_a_file || settings.home_off || test_run {
+            Screen::Canvas
+        } else {
+            Screen::Home
+        };
+        let mut updater = Updater::default();
+        if !settings.update_check_off && !test_run {
+            updater.check(false);
+        }
+        // How the last update went (said once).
+        if let Some(text) = update::take_result(settings_folder.as_deref()) {
+            files.show_message("Update", text);
+        }
+        let installed = update::program_folder().is_some_and(|f| update::is_installed(&f));
+        let home_at_start = !settings.home_off;
+        let updates_at_start = !settings.update_check_off;
         Self {
             pen_input,
             document,
@@ -246,7 +341,7 @@ impl DuckQuill {
             canvas,
             filters: FilterTool::default(),
             pen_test: PenTestScreen::default(),
-            screen: Screen::Canvas,
+            screen,
             playback,
             timeline,
             animation_tools,
@@ -263,6 +358,15 @@ impl DuckQuill {
             last_input: Instant::now(),
             ctx: None,
             settings_saved: Instant::now(),
+            search: commands::Search::default(),
+            home: Home::default(),
+            home_at_start,
+            updates_at_start,
+            updater,
+            installed,
+            updating: false,
+            instance,
+            queued: None,
             #[cfg(feature = "demo")]
             demo: demo::Demo::from_env(),
         }
@@ -281,6 +385,8 @@ impl DuckQuill {
         self.settings.theme = Some(theme::name(ctx.options(|o| o.theme_preference)).to_owned());
         self.settings.window = self.window;
         self.settings.animation_tools = self.animation_tools;
+        self.settings.home_off = !self.home_at_start;
+        self.settings.update_check_off = !self.updates_at_start;
         if self.settings != before || !folder.join("settings.json").exists() {
             let _ = self.settings.save(folder);
         }
@@ -298,8 +404,12 @@ impl DuckQuill {
         self.window = Some(WindowPlace { size, maximized });
     }
 
-    /// "Restore the picture that wasn't saved?" for each copy left behind.
+    /// "Restore the picture that wasn't saved?" for each copy left behind
+    /// (on the Home screen they're listed instead).
     fn restore_window(&mut self, ctx: &egui::Context) {
+        if self.screen == Screen::Home {
+            return;
+        }
         let Some(left) = self.restore_offer.first().cloned() else {
             return;
         };
@@ -328,58 +438,41 @@ impl DuckQuill {
             });
         });
         match choice {
-            Some(true) => match quill_engine::file::open(&left.picture) {
-                Ok(document) => {
-                    self.document = document;
-                    self.history = History::default();
-                    // Never saved by you, so it counts as unsaved.
-                    self.history.mark_unsaved();
-                    self.files.restored(left.note.original.clone());
-                    self.canvas.reset();
-                    self.canvas.fit_text_size(self.document.height());
-                    self.new_picture_shown();
-                    self.autosave.adopt(&left);
-                    self.restore_offer.clear(); // one picture at a time
-                }
-                Err(error) => {
-                    self.files
-                        .show_message("Couldn't restore it", error.to_string());
-                    self.restore_offer.remove(0);
-                }
-            },
-            Some(false) => {
-                Autosave::throw_away(&left);
-                self.restore_offer.remove(0);
+            Some(true) => {
+                self.restore(0);
+                self.restore_offer.clear(); // one picture at a time
             }
+            Some(false) => self.throw_away(0),
             None => {}
         }
     }
 
     /// File → Settings: what can be switched on and off, all in one place
-    /// (the same switches as in the menus).
+    /// (drawn from the list in `commands.rs`, like the menus).
     fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.settings_open {
             return;
         }
+        let state = self.command_state(ctx, false, false);
         let mut open = true;
+        let mut chosen = None;
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_width(360.0);
-                ui.checkbox(&mut self.animation_tools, "Animation tools")
-                    .on_hover_text("Also in View");
-                ui.weak("   The timeline and the Animation menu, for drawing frame by frame.");
-                ui.weak("   Off, Duck Quill is a plain drawing app; frames are never lost.");
-                ui.add_space(6.0);
-                ui.checkbox(&mut self.canvas.pixel_grid, "Pixel grid")
-                    .on_hover_text("Also in View");
-                ui.weak("   Lines between the pixels when you zoom in close.");
-                ui.add_space(6.0);
-                theme::theme_menu(ui);
+                ui.set_width(380.0);
+                chosen = commands::menu_items(ui, Menu::Settings, &state, |ui, entry| {
+                    if !entry.tip.is_empty() {
+                        ui.add(egui::Label::new(egui::RichText::new(entry.tip).weak()).wrap());
+                        ui.add_space(6.0);
+                    }
+                });
             });
+        if let Some(Act::App(act)) = chosen {
+            self.app_act(act, ctx);
+        }
         self.settings_open &= open;
     }
 
@@ -498,7 +591,7 @@ impl DuckQuill {
     }
 
     /// The timeline at the bottom, playback, keys, and the onion skin.
-    fn update_timeline(&mut self, ui: &mut egui::Ui, keys: bool) {
+    fn update_timeline(&mut self, ui: &mut egui::Ui) {
         // Drawing pauses playback.
         if self.canvas.is_painting() {
             self.timeline.playback.playing = false;
@@ -510,25 +603,9 @@ impl DuckQuill {
             }
             return;
         }
-        // Keys: , and . step, / plays.
-        if keys && self.can_change_frames() && !ui.ctx().egui_wants_keyboard_input() {
-            let (back, forward, play) = ui.input(|i| {
-                (
-                    i.key_pressed(Key::Comma),
-                    i.key_pressed(Key::Period),
-                    i.key_pressed(Key::Slash),
-                )
-            });
-            let frame = self.document.frame();
-            let by = i64::from(forward) - i64::from(back);
-            if by != 0 {
-                self.timeline.playback.playing = false;
-                let to = timeline::step(self.document.timeline(), frame, by);
-                self.timeline_action(TimelineAction::GoTo(to));
-            }
-            if play {
-                self.timeline.playback.toggle();
-            }
+        // Only under the canvas (not on Home or the pen test).
+        if self.screen != Screen::Canvas {
+            return;
         }
         // Playing.
         if self.timeline.playback.playing && self.can_change_frames() {
@@ -611,77 +688,6 @@ impl DuckQuill {
                 }
             });
         });
-    }
-
-    /// The Animation menu (while the tools are on).
-    fn animation_menu(&mut self, ui: &mut egui::Ui, enabled: bool) {
-        let mut action = None;
-        ui.add_enabled_ui(enabled, |ui| {
-            ui.menu_button("Animation", |ui| {
-                let playing = self.timeline.playback.playing;
-                if ui
-                    .add(Button::new(if playing { "Pause" } else { "Play" }).shortcut_text("/"))
-                    .clicked()
-                {
-                    self.timeline.playback.toggle();
-                }
-                let timeline = self.document.timeline();
-                let frame = self.document.frame();
-                if ui
-                    .add(Button::new("Previous frame").shortcut_text(","))
-                    .clicked()
-                {
-                    action = Some(TimelineAction::GoTo(timeline::step(timeline, frame, -1)));
-                }
-                if ui
-                    .add(Button::new("Next frame").shortcut_text("."))
-                    .clicked()
-                {
-                    action = Some(TimelineAction::GoTo(timeline::step(timeline, frame, 1)));
-                }
-                ui.separator();
-                if ui.button("New frame").clicked() {
-                    action = Some(TimelineAction::Add);
-                }
-                if ui.button("Duplicate frame").clicked() {
-                    action = Some(TimelineAction::Duplicate);
-                }
-                if ui
-                    .add_enabled(self.document.frame_count() > 1, Button::new("Delete frame"))
-                    .clicked()
-                {
-                    action = Some(TimelineAction::Delete(frame));
-                }
-                ui.separator();
-                let id = self.document.active_id();
-                let animated = self.document.active_layer().animated();
-                let label = if animated {
-                    "Make this layer still"
-                } else {
-                    "Animate this layer"
-                };
-                let tip = if animated {
-                    "One drawing on every frame: this frame's (Undo brings the others back)"
-                } else {
-                    "A drawing per frame, starting as copies of this one"
-                };
-                if ui.button(label).on_hover_text(tip).clicked()
-                    && self.can_change_frames()
-                    && self.from_script.is_none()
-                {
-                    if let Some(step) = AnimatedCommand::set(&mut self.document, id, !animated) {
-                        self.history.push(Box::new(step));
-                    }
-                    ui.close();
-                }
-                ui.checkbox(&mut self.timeline.onion.on, "Onion skin");
-                ui.separator();
-                ui.weak("Export: File → Export animation…");
-            });
-        });
-        if let Some(action) = action {
-            self.timeline_action(action);
-        }
     }
 
     /// Carries out File → Export animation's choice, for the frames of
@@ -787,30 +793,244 @@ impl DuckQuill {
         }
     }
 
-    /// Checks the keyboard for Ctrl+Z (undo) and Ctrl+Y or Ctrl+Shift+Z
-    /// (redo). Returns (undo, redo).
-    fn undo_redo_shortcuts(&self, ctx: &egui::Context) -> (bool, bool) {
-        if ctx.egui_wants_keyboard_input() {
-            return (false, false); // typing in a text box: Ctrl+Z is for the text
+    /// What the commands need to know: what can be used now, and what's on.
+    fn command_state(
+        &mut self,
+        ctx: &egui::Context,
+        busy: bool,
+        watching: bool,
+    ) -> commands::State {
+        commands::State {
+            busy,
+            on_canvas: self.screen == Screen::Canvas,
+            watching,
+            selected: self.document.selection().is_some(),
+            frames: self.document.frame_count(),
+            can_undo: self.history.undo_name().is_some(),
+            can_redo: self.history.redo_name().is_some(),
+            animation_tools: self.animation_tools,
+            pixel_grid: self.canvas.pixel_grid,
+            references_hidden: *self.canvas.references_hidden(),
+            onion: self.timeline.onion.on,
+            playing: self.timeline.playback.playing,
+            theme: Some(ctx.options(|o| o.theme_preference)),
+            home_at_start: self.home_at_start,
+            updates_at_start: self.updates_at_start,
+            pen_test: self.screen == Screen::PenTest,
+            layer_animated: self.document.active_layer().animated(),
         }
-        ctx.input_mut(|i| {
-            // egui ignores an extra Shift when matching, so check
-            // Ctrl+Shift+Z first, or it would count as Ctrl+Z.
-            let redo = i.consume_shortcut(&KeyboardShortcut::new(
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                Key::Z,
-            )) | i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y));
-            let undo = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
-            (undo, redo)
-        })
+    }
+
+    /// Carries out one of the app's own commands.
+    fn app_act(&mut self, act: AppAct, ctx: &egui::Context) {
+        match act {
+            // Done where the undo buttons are.
+            AppAct::Undo | AppAct::Redo => {}
+            AppAct::Home => self.screen = Screen::Home,
+            AppAct::CanvasScreen => self.screen = Screen::Canvas,
+            AppAct::PenTestScreen => self.screen = Screen::PenTest,
+            AppAct::NewWindow => {
+                let started = std::env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg(NEW_WINDOW).spawn());
+                if let Err(error) = started {
+                    self.files
+                        .show_message("Couldn't open a new window", error.to_string());
+                }
+            }
+            AppAct::Search => self.search.show(),
+            AppAct::AnimationTools => self.animation_tools = !self.animation_tools,
+            AppAct::PixelGrid => self.canvas.pixel_grid = !self.canvas.pixel_grid,
+            AppAct::HideReferences => {
+                let hidden = self.canvas.references_hidden();
+                *hidden = !*hidden;
+            }
+            AppAct::AddReference => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Pictures", &["png", "jpg", "jpeg"])
+                    .pick_file()
+                    && let Err(problem) =
+                        self.canvas
+                            .add_reference(&mut self.document, &mut self.history, &path)
+                {
+                    self.files.show_message(
+                        "Can't pin that picture",
+                        format!("{}\n\n{problem}", path.display()),
+                    );
+                }
+            }
+            AppAct::Theme(choice) => ctx.set_theme(choice.preference()),
+            AppAct::HomeAtStart => self.home_at_start = !self.home_at_start,
+            AppAct::UpdatesAtStart => self.updates_at_start = !self.updates_at_start,
+            AppAct::PlayPause => self.timeline.playback.toggle(),
+            AppAct::PreviousFrame | AppAct::NextFrame => {
+                self.timeline.playback.playing = false;
+                let by = if act == AppAct::NextFrame { 1 } else { -1 };
+                let to = timeline::step(self.document.timeline(), self.document.frame(), by);
+                self.timeline_action(TimelineAction::GoTo(to));
+            }
+            AppAct::NewFrame => self.timeline_action(TimelineAction::Add),
+            AppAct::DuplicateFrame => self.timeline_action(TimelineAction::Duplicate),
+            AppAct::DeleteFrame => {
+                let frame = self.document.frame();
+                self.timeline_action(TimelineAction::Delete(frame));
+            }
+            AppAct::AnimateLayer => {
+                if self.can_change_frames() && self.from_script.is_none() {
+                    let id = self.document.active_id();
+                    let animated = self.document.active_layer().animated();
+                    if let Some(step) = AnimatedCommand::set(&mut self.document, id, !animated) {
+                        self.history.push(Box::new(step));
+                    }
+                }
+            }
+            AppAct::OnionSkin => self.timeline.onion.on = !self.timeline.onion.on,
+            AppAct::Shortcuts => self.shortcut_sheet.open = !self.shortcut_sheet.open,
+            AppAct::About => self.about.open = true,
+            AppAct::CheckForUpdates => self.updater.check(true),
+            AppAct::StartUpdate => match (&self.updater.offer, self.installed) {
+                (Some(_), true) => self.updater.download(),
+                (Some(offer), false) => update::open_in_browser(&offer.page),
+                (None, _) => {}
+            },
+        }
+    }
+
+    /// Answers from the update check, and pictures double-clicked while
+    /// Duck Quill runs.
+    fn updates_and_requests(&mut self, ctx: &egui::Context) {
+        match self.updater.poll() {
+            Some(UpdateEvent::Answer(text)) => self.files.show_message("Updates", text),
+            Some(UpdateEvent::Ready(setup)) => self.install_update(ctx, &setup),
+            None => {}
+        }
+        if self.updater.is_busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        for pictures in self.instance.take_requests() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+            if let Some(picture) = pictures.into_iter().next() {
+                self.files.request_open(picture);
+                self.screen = Screen::Canvas;
+            }
+        }
+        if self.instance.answers() {
+            ctx.request_repaint_after(instance::LOOK_EVERY);
+        }
+    }
+
+    /// The checked setup is ready: keep the work, start the updater and
+    /// close. Unsaved work stays in its autosaved copy and is offered back
+    /// when Duck Quill opens again.
+    fn install_update(&mut self, ctx: &egui::Context, setup: &Path) {
+        let Some(offer) = self.updater.offer.clone() else {
+            return;
+        };
+        self.canvas
+            .finish_editing(&mut self.document, &mut self.history);
+        let name = self.files.picture_name();
+        let original = self.files.path().map(Path::to_path_buf);
+        self.autosave.copy_now(
+            &self.document,
+            &self.history,
+            &name,
+            original.as_deref(),
+            SystemTime::now(),
+        );
+        let reopen: Vec<PathBuf> = original.into_iter().collect();
+        match update::start_updater(setup, offer.version, &reopen) {
+            Ok(()) => {
+                self.updating = true;
+                self.save_settings(ctx);
+                self.files.close_now(ctx);
+            }
+            Err(problem) => self
+                .files
+                .show_message("Couldn't start the update", problem),
+        }
+    }
+
+    /// Opens the unsaved copy at `index` of the list left from last time.
+    fn restore(&mut self, index: usize) {
+        let Some(left) = self.restore_offer.get(index).cloned() else {
+            return;
+        };
+        match quill_engine::file::open(&left.picture) {
+            Ok(document) => {
+                self.document = document;
+                self.history = History::default();
+                // Never saved by you, so it counts as unsaved.
+                self.history.mark_unsaved();
+                self.files.restored(left.note.original.clone());
+                self.canvas.reset();
+                self.canvas.fit_text_size(self.document.height());
+                self.new_picture_shown();
+                self.autosave.adopt(&left);
+                self.restore_offer.remove(index);
+                self.screen = Screen::Canvas;
+            }
+            Err(error) => {
+                self.files
+                    .show_message("Couldn't restore it", error.to_string());
+                self.restore_offer.remove(index);
+            }
+        }
+    }
+
+    fn throw_away(&mut self, index: usize) {
+        if index < self.restore_offer.len() {
+            let left = self.restore_offer.remove(index);
+            Autosave::throw_away(&left);
+        }
+    }
+
+    /// The Home screen.
+    fn home_screen(&mut self, ui: &mut egui::Ui) {
+        let banner = self.updater.banner(self.installed);
+        let action = self.home.ui(
+            ui,
+            self.settings_folder.as_deref(),
+            self.files.recent(),
+            &self.restore_offer,
+            banner,
+            &mut self.home_at_start,
+            true,
+        );
+        let file = |action| Some(Act::File(action));
+        match action {
+            Some(HomeAction::New) => self.queued = file(files::FileAction::New),
+            Some(HomeAction::NewAnimation) => self.queued = file(files::FileAction::NewAnimation),
+            Some(HomeAction::NewSprite) => self.queued = file(files::FileAction::NewSprite),
+            Some(HomeAction::Open) => self.queued = file(files::FileAction::Open),
+            Some(HomeAction::OpenRecent(index)) => {
+                self.queued = file(files::FileAction::OpenRecent(index));
+            }
+            Some(HomeAction::Restore(index)) => self.restore(index),
+            Some(HomeAction::ThrowAway(index)) => self.throw_away(index),
+            Some(HomeAction::Update) => self.queued = Some(Act::App(AppAct::StartUpdate)),
+            Some(HomeAction::Back) => self.screen = Screen::Canvas,
+            None => {}
+        }
+        if self.queued.is_some() {
+            ui.ctx().request_repaint();
+        }
     }
 }
 
 impl eframe::App for DuckQuill {
     fn on_exit(&mut self) {
-        // Closing normally: either nothing was unsaved, or you chose not
-        // to save it. Either way the autosaved copy isn't needed.
-        self.autosave.finish();
+        if self.updating {
+            // Closing for an update: the copy of unsaved work stays, to
+            // be offered back when Duck Quill opens again.
+            self.autosave.wait();
+        } else {
+            // Closing normally: either nothing was unsaved, or you chose
+            // not to save it. Either way the autosaved copy isn't needed.
+            self.autosave.finish();
+        }
         if let Some(ctx) = self.ctx.clone() {
             self.save_settings(&ctx);
         }
@@ -842,85 +1062,58 @@ impl eframe::App for DuckQuill {
 
         // While a small window like "Save changes?" is open, or a script
         // is playing, shortcuts would act on the picture, so they're ignored.
-        let dialog =
-            self.files.dialog_open() || self.filters.dialog_open() || self.canvas.dialog_open();
-        let (mut undo, mut redo, mut file_action) = if dialog || busy {
-            (false, false, None)
-        } else {
-            let (undo, redo) = self.undo_redo_shortcuts(ui.ctx());
-            (undo, redo, self.files.shortcuts(ui.ctx()))
-        };
-        // Edit and Select shortcuts: on the canvas, not while typing text.
-        let mut edit_action = if dialog
-            || busy
-            || watching
-            || self.screen != Screen::Canvas
-            || self.canvas.is_typing()
-        {
-            None
-        } else {
-            edit::shortcuts(ui.ctx())
-        };
+        let dialog = self.files.dialog_open()
+            || self.filters.dialog_open()
+            || self.canvas.dialog_open()
+            || self.search.open;
+        let state = self.command_state(ui.ctx(), busy, watching);
+        let (mut undo, mut redo) = (false, false);
+        let (mut file_action, mut edit_action, mut layer_action) = (None, None, None);
+        // A command, from its keys, a menu, Ctrl+K or the Home screen. The
+        // keys are read from the list in `commands.rs`.
+        let mut act = self.queued.take();
+        if !dialog && act.is_none() {
+            let typing = self.canvas.is_typing();
+            act = commands::shortcuts_pressed(ui.ctx(), &state, |entry| {
+                let undo_redo =
+                    matches!(entry.act, Act::App(AppAct::Undo) | Act::App(AppAct::Redo));
+                match entry.menu {
+                    Menu::File | Menu::Help => true,
+                    // While typing text on the canvas, its keys are the text's.
+                    Menu::Edit | Menu::Select => undo_redo || !typing,
+                    _ => false,
+                }
+            });
+            if act.is_none() && !typing && state.why_not(Act::Edit(EditAction::Copy)).is_none() {
+                act = edit::clipboard_keys(ui.ctx()).map(Act::Edit);
+            }
+            if act.is_none() && !typing {
+                act = commands::keys_pressed(ui, &[Menu::Help, Menu::Animation])
+                    .into_iter()
+                    .map(|(act, _)| act)
+                    .find(|act| state.why_not(*act).is_none());
+            }
+        }
 
-        let mut layer_action = None;
         egui::Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                file_action = file_action.or(self.files.menu(ui, busy));
-                let not_here = busy || watching || self.screen != Screen::Canvas;
-                let selected = self.document.selection().is_some();
-                edit_action = edit_action
-                    .or(edit::edit_menu(ui, not_here, selected))
-                    .or(edit::select_menu(ui, not_here, selected));
-                layer_action = layer_menu(ui, busy || self.screen != Screen::Canvas);
-                self.filters.menu(ui, busy || self.screen != Screen::Canvas);
-                let mut add_reference = false;
-                ui.menu_button("View", |ui| {
-                    theme::theme_menu(ui);
-                    ui.separator();
-                    let here = !busy && self.screen == Screen::Canvas;
-                    if ui
-                        .add_enabled(here, egui::Button::new("Add reference picture…"))
-                        .on_hover_text("Pin a photo or drawing beside the painting, to look at and pick colours from")
-                        .clicked()
-                    {
-                        add_reference = true;
-                        ui.close();
-                    }
-                    ui.checkbox(self.canvas.references_hidden(), "Hide reference pictures");
-                    ui.checkbox(&mut self.canvas.pixel_grid, "Pixel grid")
-                        .on_hover_text("Lines between the pixels when you zoom in close");
-                    ui.separator();
-                    ui.checkbox(&mut self.animation_tools, "Animation tools")
-                        .on_hover_text("The timeline and the Animation menu, for drawing frame by frame");
-                });
+                // The menus, drawn from the same list.
+                act = act.or(self.files.menu(ui, &state));
+                for menu in [
+                    Menu::Edit,
+                    Menu::Select,
+                    Menu::Layer,
+                    Menu::Filters,
+                    Menu::View,
+                ] {
+                    act = act.or(commands::menu(ui, menu, &state));
+                }
                 if self.animation_tools {
-                    self.animation_menu(ui, !busy && self.screen == Screen::Canvas);
+                    act = act.or(commands::menu(ui, Menu::Animation, &state));
                 }
-                if add_reference
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Pictures", &["png", "jpg", "jpeg"])
-                        .pick_file()
-                    && let Err(problem) =
-                        self.canvas
-                            .add_reference(&mut self.document, &mut self.history, &path)
-                {
-                    self.files.show_message(
-                        "Can't pin that picture",
-                        format!("{}\n\n{problem}", path.display()),
-                    );
-                }
-                ui.menu_button("Help", |ui| {
-                    if ui
-                        .add(Button::new("Keyboard shortcuts").shortcut_text("?"))
-                        .clicked()
-                    {
-                        self.shortcut_sheet.open = true;
-                    }
-                    if ui.button("About Duck Quill").clicked() {
-                        self.about.open = true;
-                    }
-                });
+                act = act.or(commands::menu(ui, Menu::Help, &state));
                 ui.separator();
+                ui.selectable_value(&mut self.screen, Screen::Home, "Home");
                 ui.selectable_value(&mut self.screen, Screen::Canvas, "Canvas");
                 ui.selectable_value(&mut self.screen, Screen::PenTest, "Pen test");
                 ui.separator();
@@ -935,8 +1128,8 @@ impl eframe::App for DuckQuill {
                     Some(name) => format!("Redo {name} (Ctrl+Y)"),
                     None => "Nothing to redo".to_owned(),
                 };
-                let can_undo = self.history.undo_name().is_some() && !busy;
-                let can_redo = self.history.redo_name().is_some() && !busy;
+                let can_undo = state.why_not(Act::App(AppAct::Undo)).is_none();
+                let can_redo = state.why_not(Act::App(AppAct::Redo)).is_none();
                 undo |= ui
                     .add_enabled(can_undo, Button::new("Undo").min_size(size))
                     .on_hover_text(undo_tip)
@@ -949,8 +1142,39 @@ impl eframe::App for DuckQuill {
                     .clicked();
                 ui.separator();
                 self.files.notice_ui(ui);
+                // "Duck Quill 0.6.1 is out: Update" (on Home it's at the top).
+                if self.screen != Screen::Home
+                    && let Some(banner) = self.updater.banner(self.installed)
+                {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(button) = banner.button
+                            && ui.add(theme::primary_button(button)).clicked()
+                        {
+                            act = Some(Act::App(AppAct::StartUpdate));
+                        }
+                        ui.label(banner.text);
+                    });
+                }
             });
         });
+        act = act.or(self.search.ui(ui.ctx(), &state));
+        match act {
+            Some(Act::File(action)) => file_action = Some(action),
+            Some(Act::Edit(action)) => edit_action = Some(action),
+            Some(Act::Layer(action)) => layer_action = Some(action),
+            Some(Act::Filter(kind)) => self.filters.open(kind),
+            Some(Act::App(AppAct::Undo)) => undo = true,
+            Some(Act::App(AppAct::Redo)) => redo = true,
+            Some(Act::App(app)) => self.app_act(app, ui.ctx()),
+            Some(Act::Tool(tool)) => self.canvas.tool_act(tool),
+            Some(Act::View(view)) => self.canvas.view_act_here(view, &self.document),
+            None => {}
+        }
+        // Edits and the layer menu act on the canvas: show it.
+        if edit_action.is_some() || layer_action.is_some() {
+            self.screen = Screen::Canvas;
+        }
+        self.updates_and_requests(ui.ctx());
 
         // Text being typed is finished first (it becomes an undo step, and
         // what's saved or played includes it).
@@ -999,7 +1223,23 @@ impl eframe::App for DuckQuill {
             &mut self.history,
             animation_name.as_deref(),
         );
+        // A picture just saved: its thumbnail for the Home screen.
+        if let Some(path) = self.files.take_saved() {
+            if let Some(folder) = &self.settings_folder {
+                home::save_thumbnail(&self.document, folder, &path);
+            }
+            self.home.forget(&path);
+        }
         if let Some(document) = new_document {
+            self.screen = Screen::Canvas;
+            // A picture opened that has no thumbnail yet (saved before
+            // there were thumbnails): make one for Home.
+            if let (Some(folder), Some(path)) = (&self.settings_folder, self.files.path())
+                && !home::thumbnail_path(folder, path).exists()
+            {
+                home::save_thumbnail(&document, folder, path);
+                self.home.forget(path);
+            }
             self.document = document;
             self.history = History::default();
             self.canvas.reset();
@@ -1067,14 +1307,11 @@ impl eframe::App for DuckQuill {
         }
         self.update_playback(ui);
         self.notes(ui);
-        self.update_timeline(ui, !dialog && !busy && self.screen == Screen::Canvas);
+        self.update_timeline(ui);
         self.canvas.locked = self.playback.is_some() || self.from_script.is_some();
         self.canvas.animation_tools = self.animation_tools;
 
         self.about.ui(ui.ctx());
-        if !dialog && !busy {
-            self.shortcut_sheet.keys(ui.ctx());
-        }
         self.shortcut_sheet.ui(ui.ctx());
         self.restore_window(ui.ctx());
         if self.files.take_recent_changed() {
@@ -1116,6 +1353,7 @@ impl eframe::App for DuckQuill {
                 .canvas
                 .ui(ui, &mut self.document, &mut self.history, ink_events),
             Screen::PenTest => self.pen_test.ui(ui, ink_events),
+            Screen::Home => self.home_screen(ui),
         }
     }
 }

@@ -26,6 +26,11 @@ rfd = "0.17"
 # The Windows clipboard, for copying and pasting pictures with other programs.
 # (egui already uses it for text.)
 arboard = { version = "3", default-features = false, features = ["image-data"] }
+# Updates (update.rs): asking GitHub for the newest release and
+# downloading it, and checking the download's SHA-256 fingerprint.
+# Only the app uses these, never quill.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
 
 # Windows-only: lets us read pen pressure, tilt and rotation from Windows Ink.
 [target.'cfg(windows)'.dependencies]

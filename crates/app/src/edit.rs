@@ -7,7 +7,7 @@
 //! for Export strokes. Paste and moving a selection can't be (scripts
 //! have no "paste these pixels"), so Export strokes says they're missing.
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use eframe::egui::{self, Key};
 use quill_engine::document::Document;
 use quill_engine::history::{CommandGroup, History, TileCommand};
 use quill_engine::image::Image;
@@ -40,95 +40,9 @@ pub enum EditAction {
     Feather,
 }
 
-const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
-const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
-const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
-const TRANSFORM: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::T);
-const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
-const DESELECT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
-const INVERT: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::I);
-const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Delete);
-
-/// One menu entry with its shortcut written beside it. True if clicked.
-fn item(
-    ui: &mut egui::Ui,
-    label: &str,
-    shortcut: Option<&KeyboardShortcut>,
-    enabled: bool,
-) -> bool {
-    let mut button = egui::Button::new(label);
-    if let Some(shortcut) = shortcut {
-        button = button.shortcut_text(ui.ctx().format_shortcut(shortcut));
-    }
-    ui.add_enabled(enabled, button).clicked()
-}
-
-/// The Edit menu. `busy`: something must be finished first.
-pub fn edit_menu(ui: &mut egui::Ui, busy: bool, selected: bool) -> Option<EditAction> {
-    let mut chosen = None;
-    ui.add_enabled_ui(!busy, |ui| {
-        ui.menu_button("Edit", |ui| {
-            let entries = [
-                ("Cut", Some(&CUT), EditAction::Cut, selected),
-                ("Copy", Some(&COPY), EditAction::Copy, true),
-                ("Paste", Some(&PASTE), EditAction::Paste, true),
-                (
-                    "Delete inside the selection",
-                    Some(&DELETE),
-                    EditAction::Delete,
-                    selected,
-                ),
-                (
-                    "Transform selection…",
-                    Some(&TRANSFORM),
-                    EditAction::Transform,
-                    selected,
-                ),
-                (
-                    "Fill with the brush colour",
-                    None,
-                    EditAction::Fill,
-                    selected,
-                ),
-            ];
-            for (i, (label, shortcut, action, enabled)) in entries.into_iter().enumerate() {
-                if i == 3 || i == 5 {
-                    ui.separator();
-                }
-                if item(ui, label, shortcut, enabled) {
-                    chosen = Some(action);
-                }
-            }
-        });
-    });
-    chosen
-}
-
-/// The Select menu.
-pub fn select_menu(ui: &mut egui::Ui, busy: bool, selected: bool) -> Option<EditAction> {
-    let mut chosen = None;
-    ui.add_enabled_ui(!busy, |ui| {
-        ui.menu_button("Select", |ui| {
-            let entries = [
-                ("All", Some(&SELECT_ALL), EditAction::SelectAll, true),
-                ("Deselect", Some(&DESELECT), EditAction::Deselect, selected),
-                ("Invert", Some(&INVERT), EditAction::Invert, true),
-                ("Layer contents", None, EditAction::SelectLayer, true),
-                ("Feather…", None, EditAction::Feather, selected),
-            ];
-            for (label, shortcut, action, enabled) in entries {
-                if item(ui, label, shortcut, enabled) {
-                    chosen = Some(action);
-                }
-            }
-        });
-    });
-    chosen
-}
-
-/// The Edit and Select shortcuts, unless a text box has the keyboard.
-pub fn shortcuts(ctx: &egui::Context) -> Option<EditAction> {
+/// Cut, Copy and Paste from the keyboard, unless a text box has it.
+/// (Their other keys are read from the list in `commands.rs`.)
+pub fn clipboard_keys(ctx: &egui::Context) -> Option<EditAction> {
     if ctx.egui_wants_keyboard_input() {
         return None;
     }
@@ -152,20 +66,7 @@ pub fn shortcuts(ctx: &egui::Context) -> Option<EditAction> {
                 _ => true,
             }
         });
-        if found.is_some() {
-            return found;
-        }
-        // With Shift first: egui ignores an extra Shift when matching.
-        [
-            (INVERT, EditAction::Invert),
-            (TRANSFORM, EditAction::Transform),
-            (SELECT_ALL, EditAction::SelectAll),
-            (DESELECT, EditAction::Deselect),
-            (DELETE, EditAction::Delete),
-        ]
-        .into_iter()
-        .find(|(shortcut, _)| i.consume_shortcut(shortcut))
-        .map(|(_, action)| action)
+        found
     })
 }
 

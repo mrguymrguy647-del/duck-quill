@@ -24,7 +24,7 @@ pub enum FilterKind {
 }
 
 impl FilterKind {
-    const ALL: [FilterKind; 5] = [
+    pub const ALL: [FilterKind; 5] = [
         FilterKind::Blur,
         FilterKind::Glow,
         FilterKind::Shadow,
@@ -32,7 +32,7 @@ impl FilterKind {
         FilterKind::GradientMap,
     ];
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             FilterKind::Blur => "Blur…",
             FilterKind::Glow => "Glow…",
@@ -42,7 +42,7 @@ impl FilterKind {
         }
     }
 
-    fn tip(self) -> &'static str {
+    pub fn tip(self) -> &'static str {
         match self {
             FilterKind::Blur => "Soften everything on the selected layer",
             FilterKind::Glow => "Spread the light parts of the selected layer into a glow",
@@ -100,23 +100,10 @@ impl Default for FilterTool {
 }
 
 impl FilterTool {
-    /// The Filters button in the top bar, with its menu. Greyed out
-    /// while `busy`.
-    pub fn menu(&mut self, ui: &mut egui::Ui, busy: bool) {
-        let button = Button::new("Filters").min_size(vec2(64.0, 26.0));
-        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-            ui.set_min_width(200.0);
-            for kind in FilterKind::ALL {
-                let entry = Button::new(kind.label()).min_size(vec2(0.0, 28.0)); // easy to tap
-                if ui
-                    .add_enabled(!busy, entry)
-                    .on_hover_text(kind.tip())
-                    .clicked()
-                {
-                    self.open = Some(kind);
-                }
-            }
-        });
+    /// Opens the window for `kind` (from the Filters menu, drawn from
+    /// the list in `commands.rs`).
+    pub fn open(&mut self, kind: FilterKind) {
+        self.open = Some(kind);
     }
 
     /// True while the filter window is open (shortcuts should wait).

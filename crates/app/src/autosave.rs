@@ -212,6 +212,22 @@ impl Autosave {
         self.last_copy = Some(now);
     }
 
+    /// Copies the picture now if anything is unsaved (before closing for
+    /// an update), and waits until the copy is written.
+    pub fn copy_now(
+        &mut self,
+        document: &Document,
+        history: &History,
+        name: &str,
+        original: Option<&Path>,
+        now: SystemTime,
+    ) {
+        self.wait();
+        self.last_copy = None;
+        self.tick(document, history, name, original, true, now);
+        self.wait();
+    }
+
     /// Waits for a copy being written (for tests, and before quitting).
     pub fn wait(&mut self) {
         if let Some(receiver) = self.writing.take()

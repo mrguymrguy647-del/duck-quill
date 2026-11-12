@@ -14,26 +14,15 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{
-    self, Button, DragValue, Id, Key, KeyboardShortcut, Modal, Modifiers, ViewportCommand, vec2,
-};
+use eframe::egui::{self, Button, DragValue, Id, Modal, ViewportCommand, vec2};
 use quill_engine::document::{Document, MAX_CANVAS_SIDE};
 use quill_engine::file::{self, Background, FILE_EXTENSION, FileError, OLD_FILE_EXTENSION};
 use quill_engine::frames::{self, SPRITE_ANIMATIONS};
 use quill_engine::history::History;
 use quill_engine::script::{PlayOptions, Player, Script, record};
 
+use crate::commands::{self, Act, Menu};
 use crate::theme;
-
-/// Keyboard shortcuts. Each one is also shown next to its menu entry.
-const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
-const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
-const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
-const SAVE_AS: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
-const EXPORT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::E);
-const EXPORT_TRANSPARENT: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::E);
 
 /// The size a new picture gets unless you choose another one.
 pub const DEFAULT_SIZE: [u32; 2] = [4000, 3000];
@@ -51,7 +40,7 @@ const PRESETS: [(&str, [u32; 2]); 5] = [
 const NOTICE_TIME: Duration = Duration::from_secs(3);
 
 /// Something you can ask the File menu to do.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FileAction {
     New,
     NewAnimation,
@@ -183,67 +172,33 @@ pub struct Files {
     recent_changed: bool,
     /// A recent picture waiting for "Save changes?" before it's opened.
     pending_open: Option<PathBuf>,
+    /// A picture double-clicked while Duck Quill runs, opened as soon as
+    /// no small window is open (after "Save changes?" if needed).
+    queued_open: Option<PathBuf>,
+    /// Saved just now (for the Home screen's thumbnail).
+    saved: Option<PathBuf>,
 }
 
 impl Files {
-    /// The File button in the top bar, with its menu. While `busy` (a
-    /// script is playing), the entries are greyed out.
+    /// The File button in the top bar, with its menu (drawn from the
+    /// list in `commands.rs`, with Open recent under Open).
     /// Returns what was chosen, if anything.
-    pub fn menu(&self, ui: &mut egui::Ui, busy: bool) -> Option<FileAction> {
+    pub fn menu(&self, ui: &mut egui::Ui, state: &commands::State) -> Option<Act> {
         let mut chosen = None;
-        let entries = [
-            ("New…", Some(NEW), FileAction::New),
-            ("New animation…", None, FileAction::NewAnimation),
-            ("New pixel sprite or tile…", None, FileAction::NewSprite),
-            ("Open…", Some(OPEN), FileAction::Open),
-            ("Save", Some(SAVE), FileAction::Save),
-            ("Save as…", Some(SAVE_AS), FileAction::SaveAs),
-            (
-                "Export PNG…",
-                Some(EXPORT),
-                FileAction::Export(Background::Paper),
-            ),
-            (
-                "Export PNG, transparent…",
-                Some(EXPORT_TRANSPARENT),
-                FileAction::Export(Background::Transparent),
-            ),
-            ("Play strokes…", None, FileAction::PlayStrokes),
-            ("Export strokes…", None, FileAction::ExportStrokes),
-            ("Export animation…", None, FileAction::ExportAnimation),
-            ("Settings…", None, FileAction::Settings),
-        ];
         let button = Button::new("File").min_size(vec2(56.0, 26.0));
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
             ui.set_min_width(260.0);
-            for (label, shortcut, action) in entries {
-                if action == FileAction::Save {
-                    // Open recent goes right under Open.
-                    ui.add_enabled_ui(!busy, |ui| {
+            let mut recent = None;
+            chosen = commands::menu_items(ui, Menu::File, state, |ui, entry| {
+                if entry.act == Act::File(FileAction::Open) {
+                    ui.add_enabled_ui(!state.busy, |ui| {
                         ui.menu_button("Open recent", |ui| {
-                            chosen = chosen.or(self.recent_menu(ui));
+                            recent = recent.or(self.recent_menu(ui));
                         });
                     });
                 }
-                // The menu closes by itself after a click.
-                let shortcut_text =
-                    shortcut.map_or_else(String::new, |s| ui.ctx().format_shortcut(&s));
-                let entry = Button::new(label)
-                    .shortcut_text(shortcut_text)
-                    .min_size(vec2(0.0, 28.0)); // easy to tap
-                if ui.add_enabled(!busy, entry).clicked() {
-                    chosen = Some(action);
-                }
-                // Lines between saving, exporting and scripts.
-                if matches!(
-                    action,
-                    FileAction::SaveAs
-                        | FileAction::Export(Background::Transparent)
-                        | FileAction::ExportAnimation
-                ) {
-                    ui.separator();
-                }
-            }
+            });
+            chosen = chosen.or(recent.map(Act::File));
         });
         chosen
     }
@@ -309,30 +264,28 @@ impl Files {
         self.path = original;
     }
 
-    /// Checks the keyboard for the File shortcuts (Ctrl+N, Ctrl+O, ...).
-    pub fn shortcuts(&self, ctx: &egui::Context) -> Option<FileAction> {
-        if ctx.egui_wants_keyboard_input() {
-            return None; // typing in a text box
-        }
-        ctx.input_mut(|i| {
-            // egui ignores an extra Shift when matching, so the shortcuts
-            // with Shift must be checked first.
-            let in_order = [
-                (SAVE_AS, FileAction::SaveAs),
-                (SAVE, FileAction::Save),
-                (
-                    EXPORT_TRANSPARENT,
-                    FileAction::Export(Background::Transparent),
-                ),
-                (EXPORT, FileAction::Export(Background::Paper)),
-                (NEW, FileAction::New),
-                (OPEN, FileAction::Open),
-            ];
-            in_order
-                .into_iter()
-                .find(|(shortcut, _)| i.consume_shortcut(shortcut))
-                .map(|(_, action)| action)
-        })
+    /// Opens `path` as soon as possible (asking "Save changes?" first if
+    /// there's unsaved work).
+    pub fn request_open(&mut self, path: PathBuf) {
+        self.queued_open = Some(path);
+    }
+
+    /// Puts `path` on the recent list (the test driver's Save).
+    #[cfg(feature = "demo")]
+    pub fn remember_for_demo(&mut self, path: &Path) {
+        self.remember(path);
+    }
+
+    /// The picture just saved, once.
+    pub fn take_saved(&mut self) -> Option<PathBuf> {
+        self.saved.take()
+    }
+
+    /// Closes the window without asking "Save changes?" (for an update:
+    /// unsaved work is kept in its autosaved copy).
+    pub fn close_now(&mut self, ctx: &egui::Context) {
+        self.closing = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
     /// True while one of our small windows ("Save changes?", New, an
@@ -468,6 +421,13 @@ impl Files {
             self.asking = Some(Discard::CloseWindow);
         }
 
+        if requested.is_none()
+            && !self.dialog_open()
+            && let Some(path) = self.queued_open.take()
+        {
+            self.pending_open = Some(path);
+            replacement = self.discard(Discard::OpenPath, ctx, frame, history);
+        }
         if let Some(action) = requested
             && !self.dialog_open()
         {
@@ -1196,6 +1156,7 @@ impl Files {
             Ok(()) => {
                 history.mark_saved();
                 self.remember(&path);
+                self.saved = Some(path.clone());
                 self.path = Some(path);
                 self.show_notice(format!("Saved {}", self.name()));
                 true

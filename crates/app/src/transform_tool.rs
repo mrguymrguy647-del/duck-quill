@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::epaint::Vertex;
 use eframe::egui::{
-    self, Button, Color32, ColorImage, CursorIcon, Mesh, PointerButton, Pos2, Rect, Shape, Stroke,
+    self, Color32, ColorImage, CursorIcon, Mesh, PointerButton, Pos2, Rect, Shape, Stroke,
     TextureHandle, TextureOptions, pos2, vec2,
 };
 use quill_engine::document::{Background, Document};
@@ -55,40 +55,6 @@ pub enum LayerAction {
     FlipHorizontal,
     FlipVertical,
     Transform,
-}
-
-/// The Layer button in the top bar, with its menu. Greyed out while
-/// `busy`. Returns what was chosen, if anything.
-pub fn layer_menu(ui: &mut egui::Ui, busy: bool) -> Option<LayerAction> {
-    let mut chosen = None;
-    let entries = [
-        (
-            "Flip horizontal",
-            LayerAction::FlipHorizontal,
-            "Mirror the selected layer: left and right swap",
-        ),
-        (
-            "Flip vertical",
-            LayerAction::FlipVertical,
-            "Mirror the selected layer: top and bottom swap",
-        ),
-        (
-            "Transform…",
-            LayerAction::Transform,
-            "Move, resize and turn the selected layer with handles",
-        ),
-    ];
-    let button = Button::new("Layer").min_size(vec2(56.0, 26.0));
-    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-        ui.set_min_width(200.0);
-        for (label, action, tip) in entries {
-            let entry = Button::new(label).min_size(vec2(0.0, 28.0)); // easy to tap
-            if ui.add_enabled(!busy, entry).on_hover_text(tip).clicked() {
-                chosen = Some(action);
-            }
-        }
-    });
-    chosen
 }
 
 /// Mirrors everything on the selected layer around the canvas's middle:

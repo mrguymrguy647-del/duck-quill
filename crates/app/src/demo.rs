@@ -275,6 +275,15 @@ impl DuckQuill {
                 result = quill_engine::file::save(&self.document, &path)
                     .map(|()| self.history.mark_saved())
                     .map_err(|e| e.to_string());
+                // As File → Save does: on the recent list, with a thumbnail.
+                if result.is_ok() {
+                    self.files.remember_for_demo(&path);
+                    if let Some(folder) = &self.settings_folder {
+                        crate::home::save_thumbnail(&self.document, folder, &path);
+                    }
+                    self.home.forget(&path);
+                    demo.wait = 20;
+                }
             }
             "open" => {
                 let path = demo.path(value.as_str().unwrap_or("picture.quill"));
@@ -299,6 +308,32 @@ impl DuckQuill {
                     ));
                 }
             }
+            "home" => self.screen = crate::Screen::Home,
+            "canvas" => self.screen = crate::Screen::Canvas,
+            "search" => {
+                // Ctrl+K with these words typed.
+                self.search.show();
+                self.search.set_query(value.as_str().unwrap_or_default());
+            }
+            "command" => {
+                // The first command the search finds, as if picked.
+                let words = value.as_str().unwrap_or_default();
+                match crate::commands::search(words).first() {
+                    Some(entry) => self.queued = Some(entry.act),
+                    None => result = Err(format!("no command found by {words}")),
+                }
+            }
+            "offer" => {
+                // As if GitHub said a newer version is out.
+                let version = crate::update::Version::parse(value.as_str().unwrap_or("9.9.9"));
+                self.updater.offer = version.map(|version| crate::update::Offer {
+                    version,
+                    page: crate::update::RELEASES_PAGE.into(),
+                    setup_url: None,
+                    checksums_url: None,
+                });
+            }
+            "installed" => self.installed = value.as_bool().unwrap_or(true),
             other => result = Err(format!("unknown step {other}")),
         }
         if let Err(problem) = result {

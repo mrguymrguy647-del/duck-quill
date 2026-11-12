@@ -33,21 +33,6 @@ pub fn primary_button(text: &str) -> Button<'static> {
     Button::new(RichText::new(text).color(INK_NAVY).strong()).fill(DUCK_YELLOW)
 }
 
-/// View → Theme: dark, light, or whatever Windows is set to.
-pub fn theme_menu(ui: &mut egui::Ui) {
-    let ctx = ui.ctx().clone();
-    let mut choice = ctx.options(|o| o.theme_preference);
-    let before = choice;
-    ui.menu_button("Theme", |ui| {
-        ui.radio_value(&mut choice, ThemePreference::Dark, "Dark");
-        ui.radio_value(&mut choice, ThemePreference::Light, "Light");
-        ui.radio_value(&mut choice, ThemePreference::System, "Same as Windows");
-    });
-    if choice != before {
-        ctx.set_theme(choice);
-    }
-}
-
 /// The theme saved in the settings ("dark", "light", "system"); dark if
 /// none was saved.
 pub fn from_name(name: Option<&str>) -> ThemePreference {

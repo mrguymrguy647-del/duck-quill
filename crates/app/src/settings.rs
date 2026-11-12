@@ -35,6 +35,10 @@ pub struct Settings {
     pub animation_tools: bool,
     /// View → Pixel grid (on unless switched off).
     pub pixel_grid_off: bool,
+    /// Settings → Show Home at start (on unless switched off).
+    pub home_off: bool,
+    /// Settings → Check for updates at start (on unless switched off).
+    pub update_check_off: bool,
 }
 
 /// The window's size (in screen points) when it isn't maximized, and

@@ -34,6 +34,7 @@ use quill_engine::view::{Point, View};
 use crate::brush_panel::brush_panel;
 use crate::color_panel::ColorPicker;
 use crate::color_panel::MAX_RECENT_COLORS;
+use crate::commands::{self, Act, Menu, ToolAct, ViewAct};
 use crate::edit::{self, Clipboard, EditAction, FeatherWindow};
 use crate::layers_panel::LayersPanel;
 use crate::paint_tool::{CanvasPlacement, PaintTool, Tool};
@@ -940,59 +941,73 @@ impl CanvasView {
         // transforming, only the ones that move the view.
         if !ctx.egui_wants_keyboard_input() && !typing {
             let editing = self.is_editing();
-            // How many times each key was pressed since the last frame
-            // (a slow frame can contain more than one press).
-            let presses = |key| ui.input(|i| i.num_presses(key)) as i32;
-            let zoom_steps = presses(Key::Plus) + presses(Key::Equals) - presses(Key::Minus);
-            if zoom_steps != 0 {
-                self.view.zoom_around(centre, ZOOM_STEP.powi(zoom_steps));
-            }
-            let rotate_steps = presses(Key::Num6) - presses(Key::Num4);
-            if rotate_steps != 0 {
-                let angle = (ROTATE_STEP_DEGREES * rotate_steps as f32).to_radians();
-                self.view.rotate_around(centre, angle);
-            }
-            if presses(Key::Num5) > 0 {
-                self.view.set_rotation_around(centre, 0.0);
-            }
-            if presses(Key::Num0) > 0 {
-                self.fit(document, rect);
-            }
-            let size_steps = presses(Key::CloseBracket) - presses(Key::OpenBracket);
-            if size_steps != 0 {
-                let settings = self.tools.settings_mut();
-                settings.size =
-                    (settings.size * BRUSH_SIZE_STEP.powi(size_steps)).clamp(MIN_SIZE, MAX_SIZE);
-            }
-            for (key, tool) in [
-                (Key::B, Tool::Brush),
-                (Key::E, Tool::Eraser),
-                (Key::I, Tool::Eyedropper),
-                (Key::F, Tool::Fill),
-                (Key::G, Tool::Gradient),
-                (Key::T, Tool::Text),
-            ] {
-                if !editing && presses(key) > 0 {
-                    self.tools.tool = tool;
+            // The keys come from the list in `commands.rs`, each as many
+            // times as it was pressed since the last frame (a slow frame
+            // can hold more than one press).
+            for (act, times) in commands::keys_pressed(ui, &[Menu::Tools, Menu::Canvas]) {
+                for _ in 0..times {
+                    match act {
+                        Act::View(view) => self.view_act(view, document, rect),
+                        Act::Tool(tool) if !editing => self.tool_act(tool),
+                        _ => {}
+                    }
                 }
-            }
-            // M: rectangle, then ellipse; L: lasso, then polygon.
-            if !editing && presses(Key::M) > 0 {
-                self.tools.tool = match self.tools.tool {
-                    Tool::Select(SelectShape::Rect) => Tool::Select(SelectShape::Ellipse),
-                    _ => Tool::Select(SelectShape::Rect),
-                };
-            }
-            if !editing && presses(Key::L) > 0 {
-                self.tools.tool = match self.tools.tool {
-                    Tool::Select(SelectShape::Lasso) => Tool::Select(SelectShape::Polygon),
-                    _ => Tool::Select(SelectShape::Lasso),
-                };
             }
         }
 
         self.pointer_on_canvas = hover.map(|pos| self.view.screen_to_canvas(to_point(pos)));
         space || self.drag.is_some()
+    }
+
+    /// Chooses a tool (from its key, its button or Ctrl+K). M and L go
+    /// round their two shapes.
+    pub fn tool_act(&mut self, tool: ToolAct) {
+        self.tools.tool = match tool {
+            ToolAct::Brush => Tool::Brush,
+            ToolAct::Eraser => Tool::Eraser,
+            ToolAct::Pick => Tool::Eyedropper,
+            ToolAct::Fill => Tool::Fill,
+            ToolAct::Gradient => Tool::Gradient,
+            ToolAct::Text => Tool::Text,
+            ToolAct::SelectBox => match self.tools.tool {
+                Tool::Select(SelectShape::Rect) => Tool::Select(SelectShape::Ellipse),
+                _ => Tool::Select(SelectShape::Rect),
+            },
+            ToolAct::Lasso => match self.tools.tool {
+                Tool::Select(SelectShape::Lasso) => Tool::Select(SelectShape::Polygon),
+                _ => Tool::Select(SelectShape::Lasso),
+            },
+        };
+    }
+
+    /// Zooms, turns or fits the view, or changes the brush size, around
+    /// the middle of `rect` (where the canvas is shown).
+    pub fn view_act(&mut self, act: ViewAct, document: &Document, rect: Rect) {
+        let centre = to_point(rect.center());
+        match act {
+            ViewAct::ZoomIn => self.view.zoom_around(centre, ZOOM_STEP),
+            ViewAct::ZoomOut => self.view.zoom_around(centre, 1.0 / ZOOM_STEP),
+            ViewAct::TurnLeft | ViewAct::TurnRight => {
+                let sign = if act == ViewAct::TurnRight { 1.0 } else { -1.0 };
+                self.view
+                    .rotate_around(centre, (ROTATE_STEP_DEGREES * sign).to_radians());
+            }
+            ViewAct::Upright => self.view.set_rotation_around(centre, 0.0),
+            ViewAct::Fit => self.fit(document, rect),
+            ViewAct::BrushSmaller | ViewAct::BrushBigger => {
+                let step = if act == ViewAct::BrushBigger { 1 } else { -1 };
+                let settings = self.tools.settings_mut();
+                settings.size =
+                    (settings.size * BRUSH_SIZE_STEP.powi(step)).clamp(MIN_SIZE, MAX_SIZE);
+            }
+        }
+    }
+
+    /// The same, from a menu or Ctrl+K (where the canvas was last shown).
+    pub fn view_act_here(&mut self, act: ViewAct, document: &Document) {
+        if let Some(rect) = self.last_rect {
+            self.view_act(act, document, rect);
+        }
     }
 
     /// Fits the whole canvas into `rect`.
