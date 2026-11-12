@@ -226,9 +226,23 @@ pub fn program_folder() -> Option<PathBuf> {
 
 // ---- Talking to GitHub (on a thread of its own) -----------------------------------
 
+/// For the quick question to GitHub: 20 seconds at most.
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .user_agent(format!("Duck Quill {}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
+/// For downloading the setup: on a slow line that can take minutes, so
+/// only connecting and the first answer are timed (and an hour overall).
+fn download_agent() -> ureq::Agent {
+    use std::time::Duration;
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(3600)))
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
         .user_agent(format!("Duck Quill {}", env!("CARGO_PKG_VERSION")))
         .build()
         .into()
@@ -265,7 +279,10 @@ pub fn check_in_background() -> Receiver<CheckAnswer> {
 }
 
 fn download(url: &str, to: &Path) -> Result<(), String> {
-    let mut response = agent().get(url).call().map_err(|e| e.to_string())?;
+    let mut response = download_agent()
+        .get(url)
+        .call()
+        .map_err(|e| e.to_string())?;
     let bytes = response
         .body_mut()
         .with_config()
@@ -323,19 +340,37 @@ pub fn install_with_way_back(
     run_setup: impl FnOnce() -> Result<(), String>,
     check: impl FnOnce() -> Result<(), String>,
 ) -> Result<String, String> {
+    // The copy aside is complete only once this mark is written beside it.
+    let complete = backup.with_extension("complete");
+    // A copy left by an update that was cut off (the PC switched off
+    // during the setup): the files it holds are the last version known to
+    // work, so they go back first.
+    if complete.exists() && backup.is_dir() {
+        restore_folder(backup, program).map_err(|e| {
+            format!("couldn't put back the files of an update that was cut off: {e}")
+        })?;
+    }
+    let _ = std::fs::remove_file(&complete);
     let _ = std::fs::remove_dir_all(backup);
     copy_folder(program, backup).map_err(|e| format!("couldn't put the old files aside: {e}"))?;
+    std::fs::write(&complete, "").map_err(|e| format!("couldn't put the old files aside: {e}"))?;
     let outcome = run_setup().and_then(|()| check());
+    let tidy = || {
+        let _ = std::fs::remove_file(&complete);
+        let _ = std::fs::remove_dir_all(backup);
+    };
     match outcome {
         Ok(()) => {
-            let _ = std::fs::remove_dir_all(backup);
+            tidy();
             Ok("updated".to_owned())
         }
         Err(problem) => {
             // Back as it was: what the setup changed or added goes, the old
             // files come back.
             let restored = restore_folder(backup, program);
-            let _ = std::fs::remove_dir_all(backup);
+            if restored.is_ok() {
+                tidy();
+            }
             match restored {
                 Ok(()) => Err(format!(
                     "the update didn't work ({problem}), so the version you had was put back"
@@ -363,22 +398,31 @@ fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Makes `program` exactly what `backup` holds: files the setup added are
-/// removed, changed ones replaced.
+/// Makes `program` exactly what `backup` holds, in every folder inside
+/// too: files the setup added are removed, changed ones replaced.
 fn restore_folder(backup: &Path, program: &Path) -> std::io::Result<()> {
-    if program.exists() {
-        for entry in std::fs::read_dir(program)? {
-            let entry = entry?;
-            if !backup.join(entry.file_name()).exists() {
-                if entry.file_type()?.is_dir() {
-                    std::fs::remove_dir_all(entry.path())?;
-                } else {
-                    std::fs::remove_file(entry.path())?;
-                }
-            }
+    remove_extras(backup, program)?;
+    copy_folder(backup, program)
+}
+
+/// Removes what's in `program` but not in `backup`, all the way down.
+fn remove_extras(backup: &Path, program: &Path) -> std::io::Result<()> {
+    if !program.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(program)? {
+        let entry = entry?;
+        let kept = backup.join(entry.file_name());
+        let is_dir = entry.file_type()?.is_dir();
+        if is_dir && kept.is_dir() {
+            remove_extras(&kept, &entry.path())?;
+        } else if is_dir {
+            std::fs::remove_dir_all(entry.path())?;
+        } else if !kept.is_file() {
+            std::fs::remove_file(entry.path())?;
         }
     }
-    copy_folder(backup, program)
+    Ok(())
 }
 
 // ---- In the app: the check, the banner, the download ---------------------------
@@ -879,6 +923,10 @@ mod tests {
             || {
                 std::fs::write(program.join("DuckQuill.exe"), "0.6.1 half-written").unwrap();
                 std::fs::write(program.join("new.dll"), "x").unwrap();
+                // Deep inside a folder, and in a new folder.
+                std::fs::write(program.join("skills/new.md"), "x").unwrap();
+                std::fs::create_dir_all(program.join("fonts")).unwrap();
+                std::fs::write(program.join("fonts/a.ttf"), "x").unwrap();
                 Err("the setup stopped with code 5".into())
             },
             || unreachable!("not checked after a failure"),
@@ -894,6 +942,11 @@ mod tests {
             !program.join("new.dll").exists(),
             "what the setup added is gone"
         );
+        assert!(
+            !program.join("skills/new.md").exists(),
+            "inside folders too"
+        );
+        assert!(!program.join("fonts").exists(), "and new folders");
         assert!(!backup.exists(), "the copy aside is tidied away");
 
         // The setup says it worked, but the new version doesn't start
@@ -922,6 +975,35 @@ mod tests {
         );
         assert_eq!(result.as_deref(), Ok("updated"));
         assert_eq!(read(&program, "DuckQuill.exe").as_deref(), Some("0.6.1"));
+
+        // An update cut off halfway (the PC switched off during the
+        // setup): its copy aside is complete, so the next update puts it
+        // back before anything else.
+        copy_folder(&program, &backup).unwrap();
+        std::fs::write(backup.with_extension("complete"), "").unwrap();
+        std::fs::write(program.join("DuckQuill.exe"), "half").unwrap();
+        let mut seen = String::new();
+        let result = install_with_way_back(
+            &program,
+            &backup,
+            || {
+                seen = read(&program, "DuckQuill.exe").unwrap();
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            seen, "0.6.1",
+            "the setup started from the last working files"
+        );
+        // A copy aside that was itself cut off (no mark) is just dropped.
+        std::fs::create_dir_all(backup.join("skills")).unwrap();
+        std::fs::write(program.join("DuckQuill.exe"), "0.6.2").unwrap();
+        let result = install_with_way_back(&program, &backup, || Ok(()), || Ok(()));
+        assert!(result.is_ok());
+        assert_eq!(read(&program, "DuckQuill.exe").as_deref(), Some("0.6.2"));
+        assert!(!backup.exists() && !backup.with_extension("complete").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

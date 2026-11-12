@@ -281,7 +281,6 @@ impl DuckQuill {
                     if let Some(folder) = &self.settings_folder {
                         crate::home::save_thumbnail(&self.document, folder, &path);
                     }
-                    self.home.forget(&path);
                     demo.wait = 20;
                 }
             }

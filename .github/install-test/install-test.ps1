@@ -137,10 +137,10 @@ Start-Sleep -Seconds 2
 Step "Double-click a picture"
 Start-Process "$Pictures\pond.quill"
 Check (Wait-For "a window" { (Windows-Of-App).Count -ge 1 } 60) "Duck Quill opens"
-Check (Wait-For "the picture" { (Title) -like '*pond*' } 30) "with the picture ($(Title))"
+Check (Wait-For "the picture" { (Title) -like 'pond.quill*' } 30) "with the picture ($(Title))"
 Shot "1-opened-by-double-click"
 Start-Process "$Pictures\duck.quill"
-Check (Wait-For "the second picture" { (Title) -like '*duck*' } 30) "a second double-click opens in the same window ($(Title))"
+Check (Wait-For "the second picture" { (Title) -like 'duck.quill*' } 30) "a second double-click opens in the same window ($(Title))"
 Start-Sleep -Seconds 3
 Check (@(Get-Process DuckQuill -ErrorAction SilentlyContinue).Count -eq 1) "and no second Duck Quill is left running"
 
@@ -168,7 +168,7 @@ Check ((Installed-Version) -eq '0.0.1') "0.0.1 is the version installed"
 $after = Folder-Hashes
 Check ($before -eq $after) "every program file is exactly as before (none added, none changed)"
 if ($before -ne $after) { Compare-Object ($before -split "`n") ($after -split "`n") | Out-String | Write-Host }
-Check (Wait-For "the picture" { (Title) -like '*duck*' } 30) "with the same picture ($(Title))"
+Check (Wait-For "the picture" { (Title) -like 'duck.quill*' } 30) "with the same picture ($(Title))"
 Shot "3-after-failed-update"
 
 Step "Update 3: a good setup"
@@ -181,7 +181,7 @@ Check ($said -match "updated to $Version") "it says Duck Quill was updated"
 Check (Wait-For "Duck Quill again" { (Windows-Of-App).Count -ge 1 } 60) "Duck Quill opens again"
 Check ((Installed-Version) -eq $Version) "$Version is the version installed"
 Check ((Get-Content "$App\installed.ini" -Raw) -match [regex]::Escape($Version)) "installed.ini says $Version"
-Check (Wait-For "the picture" { (Title) -like '*duck*' } 30) "with the same picture ($(Title))"
+Check (Wait-For "the picture" { (Title) -like 'duck.quill*' } 30) "with the same picture ($(Title))"
 Check ((Get-Content "$SettingsFolder\settings.json" -Raw) -replace '\s', '' -match '"color":\[12,34,56\]') "your settings are kept"
 Check ((User-Path) -split ';' -contains $App) "quill is still on the PATH"
 Check ((Registry-Default 'HKCU\Software\Classes\.quill') -eq 'DuckQuill.Picture') ".quill still opens in Duck Quill"

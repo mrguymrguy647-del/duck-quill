@@ -733,8 +733,10 @@ pub fn keys_pressed(ui: &egui::Ui, menus: &[Menu]) -> Vec<(Act, u32)> {
                 .iter()
                 .map(|k| {
                     ui.input(|i| {
-                        // Only the key on its own (Ctrl+E is Export, not Eraser).
-                        if i.modifiers.command {
+                        // Only the key on its own (Ctrl+E is Export, not
+                        // Eraser). Ctrl with Alt is AltGr, which types [ and
+                        // ] on many keyboards, so that still counts.
+                        if i.modifiers.command && !i.modifiers.alt {
                             0
                         } else {
                             i.num_presses(*k) as u32

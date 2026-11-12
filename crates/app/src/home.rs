@@ -7,7 +7,6 @@
 //! settings folder's `thumbnails` folder, one small PNG per picture.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -48,17 +47,28 @@ pub struct Banner {
 
 #[derive(Default)]
 pub struct Home {
-    /// Loaded thumbnails (None: there is none for that picture).
-    textures: HashMap<PathBuf, Option<TextureHandle>>,
+    /// Loaded thumbnails, with when their file was written (a newer file,
+    /// written after a save, is loaded again). None: there is none.
+    textures: HashMap<PathBuf, (Option<SystemTime>, Option<TextureHandle>)>,
 }
 
-/// Where the thumbnail of the picture at `picture` is kept.
+/// Where the thumbnail of the picture at `picture` is kept: named by a
+/// fingerprint of its full path (FNV-1a, which never changes between
+/// versions of Duck Quill).
 pub fn thumbnail_path(settings_folder: &Path, picture: &Path) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    crate::settings::full_path(picture).hash(&mut hasher);
+    let full = crate::settings::full_path(picture);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in full.to_string_lossy().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
     settings_folder
         .join("thumbnails")
-        .join(format!("{:016x}.png", hasher.finish()))
+        .join(format!("{hash:016x}.png"))
+}
+
+fn written(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Makes the thumbnail of a picture just saved, on its own thread (the
@@ -98,11 +108,6 @@ fn load_texture(ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
 }
 
 impl Home {
-    /// A thumbnail may have changed (the picture was saved again).
-    pub fn forget(&mut self, picture: &Path) {
-        self.textures.remove(&crate::settings::full_path(picture));
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &mut self,
@@ -172,15 +177,16 @@ impl Home {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(16.0);
                 for (index, picture) in recent.iter().enumerate() {
-                    let texture = self
-                        .textures
-                        .entry(crate::settings::full_path(picture))
-                        .or_insert_with(|| {
-                            settings_folder.and_then(|folder| {
-                                load_texture(&ctx, &thumbnail_path(folder, picture))
-                            })
-                        })
-                        .clone();
+                    let file = settings_folder.map(|folder| thumbnail_path(folder, picture));
+                    let when = file.as_deref().and_then(written);
+                    let key = crate::settings::full_path(picture);
+                    let fresh = self.textures.get(&key).is_some_and(|(t, _)| *t == when);
+                    if !fresh {
+                        // New, or written again since (a save).
+                        let texture = file.as_deref().and_then(|f| load_texture(&ctx, f));
+                        self.textures.insert(key.clone(), (when, texture));
+                    }
+                    let texture = self.textures.get(&key).and_then(|(_, t)| t.clone());
                     let name = picture
                         .file_stem()
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());

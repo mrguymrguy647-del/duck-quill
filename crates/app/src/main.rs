@@ -88,7 +88,14 @@ fn main() -> eframe::Result {
             None => Ok(()),
         };
     }
-    let new_window = args.iter().any(|a| a == NEW_WINDOW);
+    // A painting script (.json) plays in a window of its own, as it always
+    // has: only pictures are handed to a running Duck Quill.
+    let script = args.iter().any(|a| {
+        std::path::Path::new(a)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    });
+    let new_window = script || args.iter().any(|a| a == NEW_WINDOW);
     let pictures: Vec<PathBuf> = args
         .iter()
         .filter(|a| *a != NEW_WINDOW)
@@ -1241,11 +1248,10 @@ impl eframe::App for DuckQuill {
             animation_name.as_deref(),
         );
         // A picture just saved: its thumbnail for the Home screen.
-        if let Some(path) = self.files.take_saved() {
-            if let Some(folder) = &self.settings_folder {
-                home::save_thumbnail(&self.document, folder, &path);
-            }
-            self.home.forget(&path);
+        if let Some(path) = self.files.take_saved()
+            && let Some(folder) = &self.settings_folder
+        {
+            home::save_thumbnail(&self.document, folder, &path);
         }
         if let Some(document) = new_document {
             self.screen = Screen::Canvas;
@@ -1255,7 +1261,6 @@ impl eframe::App for DuckQuill {
                 && !home::thumbnail_path(folder, path).exists()
             {
                 home::save_thumbnail(&document, folder, path);
-                self.home.forget(path);
             }
             self.document = document;
             self.history = History::default();

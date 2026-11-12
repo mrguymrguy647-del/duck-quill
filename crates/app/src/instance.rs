@@ -8,7 +8,7 @@
 //! was asked to open into a small file in `open-requests`, and stops. The
 //! running one looks in that folder twice a second.
 
-use std::fs::File;
+use std::fs::{File, TryLockError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -66,16 +66,20 @@ impl Instance {
         };
         match lock.try_lock() {
             Ok(()) => {
-                // Requests left from before (nobody was there to answer).
-                let _ = std::fs::remove_dir_all(&requests);
+                // Requests left long ago (nobody was there to answer) are
+                // dropped; one left a moment ago, while the last Duck
+                // Quill was closing, is answered by this one.
+                forget_old_requests(&requests);
                 Start::Running(Instance {
                     lock: Some(lock),
                     requests: Some(requests),
                     last_look: Instant::now(),
                 })
             }
-            Err(_) if new_window => Start::Running(Instance::alone()),
-            Err(_) => match hand_over(&requests, pictures) {
+            // Locks don't work here (some network drives): don't hand over.
+            Err(TryLockError::Error(_)) => Start::Running(Instance::alone()),
+            Err(TryLockError::WouldBlock) if new_window => Start::Running(Instance::alone()),
+            Err(TryLockError::WouldBlock) => match hand_over(&requests, pictures) {
                 Ok(()) => Start::HandedOver,
                 // Couldn't leave the request: open here after all.
                 Err(_) => Start::Running(Instance::alone()),
@@ -119,6 +123,24 @@ impl Instance {
                 )
             })
             .collect()
+    }
+}
+
+/// Deletes requests older than half a minute.
+fn forget_old_requests(folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age > Duration::from_secs(30));
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
