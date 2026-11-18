@@ -6,11 +6,18 @@
 //! anything unsaved. The window title shows the picture's name, with a `*`
 //! when there are unsaved changes.
 //!
-//! The actual reading and writing is done by the engine (`file.rs`).
+//! A PNG picture can be opened too. It stays *linked* to its PNG: Save
+//! writes the PNG back (for the program that's watching it, like Duck
+//! Mold) and keeps the layers in a `.quill` beside it. Save As makes an
+//! ordinary `.quill` picture of it, and the link is dropped.
+//!
+//! The actual reading and writing is done by the engine (`file.rs`, and
+//! `png_link.rs` for PNGs).
 //! Opening and saving use the standard Windows file windows (the `rfd`
 //! library). While one of those is open, the app waits for it, like any
 //! Windows program.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,6 +27,7 @@ use eframe::egui::{
 use quill_engine::document::{Document, MAX_CANVAS_SIDE};
 use quill_engine::file::{self, Background, FILE_EXTENSION, FileError, OLD_FILE_EXTENSION};
 use quill_engine::history::History;
+use quill_engine::png_link::{self, Layers};
 use quill_engine::script::{PlayOptions, Player, Script, record};
 
 use crate::theme;
@@ -120,7 +128,9 @@ struct ErrorMessage {
 #[derive(Default)]
 pub struct Files {
     /// The file the picture was opened from or last saved to.
-    /// `None` until it has been saved once.
+    /// `None` until it has been saved once. For a picture opened from a
+    /// PNG this is the PNG: Save then writes the PNG and its layers
+    /// beside it (see `save_to`).
     path: Option<PathBuf>,
     /// Waiting for the answer to "Save changes?" before doing this.
     asking: Option<Discard>,
@@ -128,7 +138,8 @@ pub struct Files {
     new_size: Option<[u32; 2]>,
     /// The size chosen last time, offered again in the New window.
     last_new_size: Option<[u32; 2]>,
-    error: Option<ErrorMessage>,
+    /// Messages waiting to be shown, one small window after another.
+    errors: VecDeque<ErrorMessage>,
     /// A short message in the top bar ("Saved ...") and when it appeared.
     notice: Option<(String, Instant)>,
     /// You chose to close the window without saving: let it close.
@@ -153,6 +164,9 @@ pub struct Files {
     recent_changed: bool,
     /// A recent picture waiting for "Save changes?" before it's opened.
     pending_open: Option<PathBuf>,
+    /// A picture was just opened from a PNG (the app then suits the
+    /// brush to it).
+    png_opened: bool,
 }
 
 impl Files {
@@ -305,9 +319,14 @@ impl Files {
     pub fn dialog_open(&self) -> bool {
         self.asking.is_some()
             || self.new_size.is_some()
-            || self.error.is_some()
+            || !self.errors.is_empty()
             || self.asking_play_size
             || self.asking_animation_export
+    }
+
+    /// True once after a picture was opened from a PNG.
+    pub fn take_png_opened(&mut self) -> bool {
+        std::mem::take(&mut self.png_opened)
     }
 
     /// What File → Export animation chose, once (the app carries it out).
@@ -916,9 +935,10 @@ impl Files {
         Some(Document::new(width, height))
     }
 
-    /// Shows the current error message, if any, until OK is clicked.
+    /// Shows the first waiting message, if any, until OK is clicked
+    /// (then the next one, if there are more).
     fn error_dialog(&mut self, ctx: &egui::Context) {
-        let Some(error) = &self.error else {
+        let Some(error) = self.errors.front() else {
             return;
         };
         let modal = Modal::new(Id::unique("file_error")).show(ctx, |ui| {
@@ -931,7 +951,7 @@ impl Files {
                 .clicked()
         });
         if modal.inner || modal.should_close() {
-            self.error = None;
+            self.errors.pop_front();
         }
     }
 
@@ -941,10 +961,11 @@ impl Files {
             .file_window(frame)
             .set_title("Open picture or painting script")
             .add_filter(
-                "Duck Quill picture or painting script",
-                &[FILE_EXTENSION, OLD_FILE_EXTENSION, "json"],
+                "Duck Quill picture, PNG picture or painting script",
+                &[FILE_EXTENSION, OLD_FILE_EXTENSION, "png", "json"],
             )
             .add_filter("Duck Quill picture", &[FILE_EXTENSION, OLD_FILE_EXTENSION])
+            .add_filter("PNG picture", &["png"])
             .add_filter("Painting script", &["json"])
             .pick_file()?;
         if path
@@ -976,12 +997,24 @@ impl Files {
         self.open_path(path)
     }
 
-    /// Opens the picture at `path`. If that fails, the error is shown
-    /// and `None` returned.
+    /// Opens the picture at `path`: a `.quill` (or `.artapp`) picture,
+    /// or a PNG. If that fails, the error is shown and `None` returned.
     pub fn open_path(&mut self, path: PathBuf) -> Option<Document> {
         // A full path, so Save finds the same file whatever the working folder.
         let path = crate::settings::full_path(&path);
-        match file::open(&path) {
+        let opened = if png_link::is_png_name(&path) {
+            png_link::open(&path).map(|opened| {
+                // Tell, once, if the layers beside the PNG weren't used.
+                if let Some(text) = layers_message(&path, opened.layers) {
+                    self.show_message("Opened as one layer", text);
+                }
+                self.png_opened = true;
+                opened.document
+            })
+        } else {
+            file::open(&path)
+        };
+        match opened {
             Ok(document) => {
                 self.opened_from = Some(file_name(&path));
                 self.remember(&path);
@@ -1020,17 +1053,43 @@ impl Files {
                 picture_path(chosen)
             }
         };
+        self.save_to(path, document, history)
+    }
 
-        match file::save(document, &path) {
-            Ok(()) => {
+    /// Saves the picture to `path`, which becomes its file. Returns true
+    /// if it was saved; if not, the reason is shown.
+    ///
+    /// A PNG (only a picture opened from one has a PNG as its file) is
+    /// saved with its layers beside it: first `name.quill`, then the PNG
+    /// itself, so the PNG is the last thing to change. Each is written
+    /// under a temporary name and swapped in, so the PNG is never left
+    /// half written.
+    fn save_to(&mut self, path: PathBuf, document: &Document, history: &mut History) -> bool {
+        let saved = if png_link::is_png_name(&path) {
+            png_link::save(document, &path)
+                .map(|layers| {
+                    format!(
+                        "Saved {}, and its layers in {}",
+                        file_name(&path),
+                        file_name(&layers)
+                    )
+                })
+                .map_err(|failed| (failed.path, failed.error))
+        } else {
+            file::save(document, &path)
+                .map(|()| format!("Saved {}", file_name(&path)))
+                .map_err(|error| (path.clone(), error))
+        };
+        match saved {
+            Ok(notice) => {
                 history.mark_saved();
                 self.remember(&path);
                 self.path = Some(path);
-                self.show_notice(format!("Saved {}", self.name()));
+                self.show_notice(notice);
                 true
             }
-            Err(error) => {
-                self.show_error("Couldn't save the picture", &path, &error);
+            Err((failed, error)) => {
+                self.show_error("Couldn't save the picture", &failed, &error);
                 false
             }
         }
@@ -1073,16 +1132,18 @@ impl Files {
         self.show_message(title, format!("{}\n\n{error}", path.display()));
     }
 
-    /// Shows a message in a small window until OK is clicked.
+    /// Shows a message in a small window until OK is clicked. If one is
+    /// showing already, this one waits its turn.
     pub fn show_message(&mut self, title: &'static str, text: String) {
-        self.error = Some(ErrorMessage { title, text });
+        self.errors.push_back(ErrorMessage { title, text });
     }
 
     fn show_notice(&mut self, text: String) {
         self.notice = Some((text, Instant::now()));
     }
 
-    /// The picture's file name, e.g. "cat.quill", or "Untitled".
+    /// The picture's file name, e.g. "cat.quill" (or "robot_face.png"
+    /// for a picture opened from a PNG), or "Untitled".
     fn name(&self) -> String {
         self.path
             .as_deref()
@@ -1114,6 +1175,25 @@ fn size_field(value: &mut u32) -> DragValue<'_> {
         .range(1..=MAX_CANVAS_SIDE)
         .speed(4.0)
         .suffix(" px")
+}
+
+/// What to tell the person when a PNG was opened as one layer although
+/// there's a `.quill` beside it (`None` when there's nothing to tell).
+fn layers_message(png: &Path, layers: Layers) -> Option<String> {
+    let png_name = file_name(png);
+    let layers_name = file_name(&png_link::layers_path(png));
+    match layers {
+        Layers::None | Layers::Kept => None,
+        Layers::Outdated => Some(format!(
+            "{png_name} was changed by another program since its layers were saved, \
+             so it is opened as one layer. The old layers are still in {layers_name} \
+             until you save."
+        )),
+        Layers::Unreadable => Some(format!(
+            "The layers saved for {png_name} (in {layers_name}) couldn't be read, \
+             so it is opened as one layer. Saving will put new layers in {layers_name}."
+        )),
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -1177,6 +1257,182 @@ mod tests {
         files.path = Some(PathBuf::from("pictures").join("cat.quill"));
         assert_eq!(files.name(), "cat.quill");
         assert_eq!(files.stem(), "cat");
+    }
+
+    /// An empty folder of this test's own, in the system's temporary folder.
+    fn test_folder(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("quill-files-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    /// Writes a small PNG (red, with a see-through corner) and returns its bytes.
+    fn write_png(path: &Path, color: [u8; 4]) -> Vec<u8> {
+        use quill_engine::image::Image;
+        let mut image = Image::new(16, 12, color);
+        image.set_pixel(0, 0, [0, 0, 0, 0]);
+        let mut bytes = Vec::new();
+        image.write_png(&mut bytes, true).unwrap();
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
+    fn notice_text(files: &Files) -> Option<&str> {
+        files.notice.as_ref().map(|(text, _)| text.as_str())
+    }
+
+    #[test]
+    fn a_picture_opened_from_a_png_is_saved_back_to_it_with_its_layers() {
+        use quill_engine::image::Image;
+        use quill_engine::layer_commands::LayerPresenceCommand;
+        use quill_engine::tile::Rgba8;
+
+        let folder = test_folder("linked");
+        let png = folder.join("robot_face.png");
+        write_png(&png, [255, 0, 0, 255]);
+
+        // Opening: a picture the PNG's size, named after the PNG.
+        let mut files = Files::default();
+        let mut document = files.open_path(png.clone()).expect("the PNG opens");
+        assert_eq!((document.width(), document.height()), (16, 12));
+        assert_eq!(document.layers().len(), 1);
+        assert_eq!(files.name(), "robot_face.png");
+        assert_eq!(files.stem(), "robot_face");
+        assert_eq!(files.path(), Some(png.as_path()));
+        assert_eq!(files.recent(), std::slice::from_ref(&png));
+        assert!(files.errors.is_empty(), "nothing to tell");
+        assert!(files.take_png_opened());
+        assert!(!files.take_png_opened(), "only once");
+
+        // Painting on a second layer, then Save: the PNG and its layers.
+        LayerPresenceCommand::add_layer(&mut document);
+        document
+            .active_layer_mut()
+            .surface
+            .set_pixel(5, 5, Rgba8::new(0, 0, 255, 255));
+        let mut history = History::default();
+        history.mark_unsaved();
+        assert!(files.save_to(png.clone(), &document, &mut history));
+        assert!(!history.is_modified());
+        assert_eq!(
+            notice_text(&files),
+            Some("Saved robot_face.png, and its layers in robot_face.quill")
+        );
+        assert_eq!(files.name(), "robot_face.png", "still linked");
+        let layers = folder.join("robot_face.quill");
+        assert_eq!(file::open(&layers).unwrap().layers().len(), 2);
+        let saved = Image::load(&png).unwrap();
+        assert_eq!(
+            saved,
+            Image::of_document(&document, Background::Transparent),
+            "the PNG is the transparent export"
+        );
+        assert_eq!(saved.pixel(5, 5), [0, 0, 255, 255]);
+        assert_eq!(saved.pixel(0, 0), [0, 0, 0, 0]);
+
+        // Opening it again brings the layers back, without a message.
+        let mut files = Files::default();
+        let again = files.open_path(png.clone()).unwrap();
+        assert_eq!(again.layers().len(), 2);
+        assert!(files.errors.is_empty());
+        assert_eq!(files.name(), "robot_face.png");
+
+        // Save As makes an ordinary picture: the link is dropped, and the
+        // PNG is left alone from then on.
+        let before = std::fs::read(&png).unwrap();
+        let copy = picture_path(folder.join("copy"));
+        assert!(files.save_to(copy.clone(), &again, &mut history));
+        assert_eq!(notice_text(&files), Some("Saved copy.quill"));
+        assert_eq!(files.name(), "copy.quill");
+        assert!(files.save_to(copy, &Document::new(16, 12), &mut history));
+        assert_eq!(std::fs::read(&png).unwrap(), before);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_png_changed_by_another_program_opens_as_one_layer_and_says_so() {
+        use quill_engine::layer_commands::LayerPresenceCommand;
+
+        let folder = test_folder("changed");
+        let png = folder.join("door.png");
+        write_png(&png, [255, 0, 0, 255]);
+        let mut files = Files::default();
+        let mut document = files.open_path(png.clone()).unwrap();
+        LayerPresenceCommand::add_layer(&mut document);
+        assert!(files.save_to(png.clone(), &document, &mut History::default()));
+
+        // Another program repaints the PNG.
+        write_png(&png, [0, 160, 0, 255]);
+        let mut files = Files::default();
+        let opened = files.open_path(png.clone()).unwrap();
+        assert_eq!(opened.layers().len(), 1);
+        assert_eq!(files.errors.len(), 1, "told once");
+        assert_eq!(files.errors[0].title, "Opened as one layer");
+        assert_eq!(
+            files.errors[0].text,
+            "door.png was changed by another program since its layers were saved, \
+             so it is opened as one layer. The old layers are still in door.quill \
+             until you save."
+        );
+        assert_eq!(files.name(), "door.png", "linked all the same");
+        // The old layers are still there.
+        let layers = folder.join("door.quill");
+        assert_eq!(file::open(&layers).unwrap().layers().len(), 2);
+
+        // Layers that can't be read are said so, in other words.
+        assert_eq!(layers_message(&png, Layers::None), None);
+        assert_eq!(layers_message(&png, Layers::Kept), None);
+        assert_eq!(
+            layers_message(&png, Layers::Unreadable).unwrap(),
+            "The layers saved for door.png (in door.quill) couldn't be read, \
+             so it is opened as one layer. Saving will put new layers in door.quill."
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_linked_save_that_fails_says_which_file_and_keeps_the_png_whole() {
+        let folder = test_folder("failed");
+        let png = folder.join("wall.png");
+        let before = write_png(&png, [9, 9, 9, 255]);
+        let mut files = Files::default();
+        let document = files.open_path(png.clone()).unwrap();
+        // A folder where the layers should go: they can't be written.
+        let layers = folder.join("wall.quill");
+        std::fs::create_dir(&layers).unwrap();
+        let mut history = History::default();
+        history.mark_unsaved();
+        assert!(!files.save_to(png.clone(), &document, &mut history));
+        assert!(history.is_modified(), "still unsaved");
+        assert_eq!(files.errors.len(), 1);
+        assert_eq!(files.errors[0].title, "Couldn't save the picture");
+        assert!(
+            files.errors[0]
+                .text
+                .starts_with(&layers.display().to_string()),
+            "{}",
+            files.errors[0].text
+        );
+        assert_eq!(std::fs::read(&png).unwrap(), before, "the PNG is untouched");
+        assert_eq!(notice_text(&files), None);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_png_that_cannot_be_opened_is_a_message() {
+        let folder = test_folder("bad");
+        let png = folder.join("words.png");
+        std::fs::write(&png, "not a picture").unwrap();
+        let mut files = Files::default();
+        assert!(files.open_path(png).is_none());
+        assert!(files.open_path(folder.join("missing.png")).is_none());
+        assert_eq!(files.errors.len(), 2, "one after the other");
+        assert_eq!(files.errors[0].title, "Couldn't open the picture");
+        assert_eq!(files.name(), "Untitled");
+        assert!(!files.take_png_opened());
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
