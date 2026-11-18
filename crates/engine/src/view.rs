@@ -248,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn fit_makes_a_tiny_canvas_fill_the_window() {
+        // A 16 x 16 texture in a 1000 x 800 window: zoomed in, not left
+        // as a speck. Height is the limit: 800 / 16 = 50, times 92%.
+        let mut view = View::default();
+        let viewport_center = Point::new(500.0, 400.0);
+        view.fit(16.0, 16.0, viewport_center, Point::new(1000.0, 800.0));
+        assert!((view.zoom() - 46.0).abs() < 0.001, "{}", view.zoom());
+        assert_close(view.canvas_to_screen(Point::new(8.0, 8.0)), viewport_center);
+        // The whole picture is inside the window, with a little room.
+        let corner = view.canvas_to_screen(Point::new(16.0, 16.0));
+        assert!(corner.x < 1000.0 && corner.y < 800.0, "{corner:?}");
+        // A single pixel can't be shown bigger than the largest zoom.
+        view.fit(1.0, 1.0, viewport_center, Point::new(1000.0, 800.0));
+        assert_eq!(view.zoom(), MAX_ZOOM);
+    }
+
+    #[test]
     fn fit_centres_the_whole_canvas() {
         let mut view = busy_view();
         let viewport_center = Point::new(500.0, 400.0);

@@ -188,6 +188,20 @@ impl Image {
         })
     }
 
+    /// True if `other` shows the same picture: the same size, and every
+    /// pixel the same. Two fully see-through pixels count as the same
+    /// whatever colour they hide (programs write different colours there,
+    /// and nobody can see them).
+    pub fn same_picture_as(&self, other: &Image) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self
+                .pixels
+                .iter()
+                .zip(&other.pixels)
+                .all(|(a, b)| a == b || (a[3] == 0 && b[3] == 0))
+    }
+
     /// The whole canvas as you'd see it.
     pub fn of_document(document: &Document, background: Background) -> Self {
         Self::from_document(document, document.bounds(), background)
@@ -447,6 +461,25 @@ mod tests {
         assert_eq!(image.pixel(7, 7), [255, 255, 255, 255]);
         image.paste(&Image::new(1, 1, [0, 0, 0, 128]), 0, 0);
         assert_eq!(image.pixel(0, 0), [127, 127, 127, 255]);
+    }
+
+    #[test]
+    fn the_same_picture_whatever_hides_in_see_through_pixels() {
+        let mut picture = Image::new(3, 2, RED);
+        picture.set_pixel(1, 1, [0, 0, 0, 0]);
+        let mut other = picture.clone();
+        assert!(picture.same_picture_as(&other));
+        // A colour nobody can see doesn't count.
+        other.set_pixel(1, 1, [90, 200, 10, 0]);
+        assert!(picture.same_picture_as(&other));
+        // One that can be seen, however faintly, does.
+        other.set_pixel(1, 1, [0, 0, 0, 1]);
+        assert!(!picture.same_picture_as(&other));
+        other.set_pixel(1, 1, [0, 0, 0, 0]);
+        other.set_pixel(0, 0, [254, 0, 0, 255]);
+        assert!(!picture.same_picture_as(&other));
+        // Another size is another picture, even with the same pixel count.
+        assert!(!Image::new(3, 2, RED).same_picture_as(&Image::new(2, 3, RED)));
     }
 
     #[test]

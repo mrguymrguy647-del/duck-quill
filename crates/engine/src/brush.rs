@@ -225,6 +225,35 @@ impl BrushSettings {
     }
 }
 
+impl BrushSettings {
+    /// The pixel brush: a hard square one pixel wide, for small pictures
+    /// where every pixel counts (a texture, a sprite). Each touch marks
+    /// exactly the pixel under the pointer, wherever in that pixel it
+    /// lands, and pen pressure changes nothing. Keeps the default colour.
+    ///
+    /// (The square tip has a thin soft rim, so one stroke leaves a pixel
+    /// 96% solid, 244 of 255, not 100%: see the test in `stroke.rs`.)
+    pub fn pixel() -> Self {
+        Self {
+            size: MIN_SIZE,
+            hardness: 1.0,
+            tip: Tip::Square,
+            pressure_size: false,
+            pressure_opacity: false,
+            ..Self::default()
+        }
+    }
+
+    /// True if this is the pixel brush, in whatever colour.
+    pub fn is_pixel(&self) -> bool {
+        let pixel = Self {
+            color: self.color,
+            ..Self::pixel()
+        };
+        *self == pixel
+    }
+}
+
 /// One dab, after pen pressure has been applied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dab {

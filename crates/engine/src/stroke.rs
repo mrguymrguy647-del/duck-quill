@@ -720,6 +720,53 @@ mod tests {
         assert_eq!(layer.tile_count(), 1);
     }
 
+    /// Every painted pixel of `layer` (in the top-left tile) with its opacity.
+    fn painted(layer: &Surface) -> Vec<((i32, i32), u8)> {
+        let mut found = Vec::new();
+        for y in 0..64 {
+            for x in 0..64 {
+                let alpha = layer.pixel(x, y).a;
+                if alpha > 0 {
+                    found.push(((x, y), alpha));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_pixel_brush_marks_exactly_the_pixel_under_the_pointer() {
+        let brush = BrushSettings::pixel();
+        assert!(brush.is_pixel());
+        assert!(!BrushSettings::default().is_pixel());
+        // Wherever in pixel (7, 5) the pointer lands, and however lightly
+        // the pen presses, that one pixel is painted and no other.
+        for (x, y, pressure) in [
+            (7.5, 5.5, 1.0),
+            (7.05, 5.05, 1.0),
+            (7.95, 5.9, 1.0),
+            (7.3, 5.8, 0.05),
+        ] {
+            let mut layer = Surface::new();
+            paint(brush, &mut layer, &[StrokePoint::new(x, y, pressure)]);
+            let found = painted(&layer);
+            assert_eq!(found.len(), 1, "at {x}, {y}: {found:?}");
+            let ((px, py), alpha) = found[0];
+            assert_eq!((px, py), (7, 5), "at {x}, {y}");
+            // The square tip's thin soft rim: 96% solid (244 of 255),
+            // not quite 100%.
+            assert!((240..=248).contains(&alpha), "at {x}, {y}: {alpha}");
+        }
+        // A line across is one pixel high, every pixel alike, no gaps.
+        let mut layer = Surface::new();
+        paint(brush, &mut layer, &[point(2.5, 10.5), point(9.5, 10.5)]);
+        let found = painted(&layer);
+        let pixels: Vec<(i32, i32)> = found.iter().map(|&(pixel, _)| pixel).collect();
+        let row: Vec<(i32, i32)> = (2..=9).map(|x| (x, 10)).collect();
+        assert_eq!(pixels, row);
+        assert!(found.iter().all(|&(_, alpha)| alpha == found[0].1));
+    }
+
     #[test]
     fn a_fast_stroke_has_no_gaps() {
         // Only two points, 490 pixels apart, like a very fast flick.
