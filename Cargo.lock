@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "quill_app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "eframe",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "quill_cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "quill_engine",
  "serde_json",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "quill_engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "gif",
  "jpeg-decoder",
