@@ -335,6 +335,12 @@ impl Stroke {
         let (sin, cos) = dab.angle.to_radians().sin_cos();
         let varies_color = self.brush.dynamics.varies_color();
         let tooth = self.brush.tooth(pressure);
+        // A hard square tip one pixel wide (the pixel brush and the pixel
+        // eraser): no soft rim, so a pixel it touches is fully painted,
+        // or fully rubbed out.
+        let exact_pixel = self.brush.tip == crate::brush::Tip::Square
+            && self.brush.hardness >= 1.0
+            && dab.radius <= 0.5;
 
         for coord in rect.tiles() {
             let (left, top) = coord.origin();
@@ -369,6 +375,15 @@ impl Stroke {
                     let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
                     let distance = dx.hypot(dy);
                     let shape = match &self.tip {
+                        // The pixel brush marks whole pixels: the one
+                        // the dab's middle is in, fully, and no other.
+                        _ if exact_pixel => {
+                            if x == cx.floor() as i32 && y == cy.floor() as i32 {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
                         None => dab_coverage(distance, dab.radius, self.brush.hardness),
                         Some(tip) => {
                             // Into the tip's own square: turned back, and
@@ -753,9 +768,8 @@ mod tests {
             assert_eq!(found.len(), 1, "at {x}, {y}: {found:?}");
             let ((px, py), alpha) = found[0];
             assert_eq!((px, py), (7, 5), "at {x}, {y}");
-            // The square tip's thin soft rim: 96% solid (244 of 255),
-            // not quite 100%.
-            assert!((240..=248).contains(&alpha), "at {x}, {y}: {alpha}");
+            // Fully solid: nothing under it shows through.
+            assert_eq!(alpha, 255, "at {x}, {y}");
         }
         // A line across is one pixel high, every pixel alike, no gaps.
         let mut layer = Surface::new();
@@ -764,7 +778,15 @@ mod tests {
         let pixels: Vec<(i32, i32)> = found.iter().map(|&(pixel, _)| pixel).collect();
         let row: Vec<(i32, i32)> = (2..=9).map(|x| (x, 10)).collect();
         assert_eq!(pixels, row);
-        assert!(found.iter().all(|&(_, alpha)| alpha == found[0].1));
+        assert!(found.iter().all(|&(_, alpha)| alpha == 255));
+        // The pixel eraser takes whole pixels away again, one at a time.
+        let eraser = BrushSettings::pixel_eraser();
+        assert!(eraser.is_pixel());
+        paint(eraser, &mut layer, &[point(4.2, 10.8)]);
+        let left: Vec<(i32, i32)> = painted(&layer).iter().map(|&(pixel, _)| pixel).collect();
+        let row: Vec<(i32, i32)> = (2..=9).filter(|x| *x != 4).map(|x| (x, 10)).collect();
+        assert_eq!(left, row);
+        assert!(painted(&layer).iter().all(|&(_, alpha)| alpha == 255));
     }
 
     #[test]

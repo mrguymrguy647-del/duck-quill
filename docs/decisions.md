@@ -2082,11 +2082,14 @@ two false alarms. Every finding, before and after:
 - **Small pictures get the pixel brush.** A PNG no bigger than 256
   pixels either way opens with the existing square tip at size 1,
   hardness 100% and no pen pressure: one touch marks exactly the pixel
-  under the pointer, wherever in the pixel it lands. The square tip has
-  a thin soft rim, so one stroke leaves a pixel 96% solid (244 of 255),
-  not 100%; a truly solid pixel pen would be a new tool, not done here.
-  The brush you had isn't forgotten: it comes back with the next
-  ordinary picture, and it is still the one remembered for next time
-  unless you change the brush yourself. Fit already zooms a tiny canvas
+  under the pointer, wherever in the pixel it lands, fully: a hard
+  square tip one pixel wide marks whole pixels with no soft rim, so
+  nothing under a painted pixel shows through (a texture's colour would
+  otherwise be tinted by the model's). The eraser becomes the same tip,
+  rubbing out: one pixel at a time, instead of 40 pixels wide on a
+  picture 32 across. The brush and eraser you had aren't forgotten:
+  they come back with the next
+  ordinary picture, and they are still the ones remembered for next
+  time unless you change them yourself. Fit already zooms a tiny canvas
   in to fill the window (up to 6400%), and sharp pixels start at 200%.
 - **The version** is 0.6.0.

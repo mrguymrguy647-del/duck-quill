@@ -122,8 +122,9 @@ as one layer, Duck Quill tells you so, and the old layers stay in `picture.quill
 
 A small picture (256 pixels or less each way) fills the window when it opens, and starts with the
 **pixel brush**: a hard square one pixel wide (tip **square**, size 1, hardness 100%, no pen
-pressure) that marks exactly the pixel under the pointer. The brush you had comes back with the next
-ordinary picture.
+pressure) that marks exactly the pixel under the pointer, fully solid. The eraser becomes the same,
+rubbing out one pixel at a time. The brush and eraser you had come back with the next ordinary
+picture.
 
 **Started by another program.** Duck Mold, the low-poly 3D modeller, starts Duck Quill to paint the texture of one face of a model, and watches the
 PNG: every time you save, the model shows the new texture.

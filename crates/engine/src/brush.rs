@@ -229,10 +229,8 @@ impl BrushSettings {
     /// The pixel brush: a hard square one pixel wide, for small pictures
     /// where every pixel counts (a texture, a sprite). Each touch marks
     /// exactly the pixel under the pointer, wherever in that pixel it
-    /// lands, and pen pressure changes nothing. Keeps the default colour.
-    ///
-    /// (The square tip has a thin soft rim, so one stroke leaves a pixel
-    /// 96% solid, 244 of 255, not 100%: see the test in `stroke.rs`.)
+    /// lands, fully (nothing under it shows through), and pen pressure
+    /// changes nothing. Keeps the default colour.
     pub fn pixel() -> Self {
         Self {
             size: MIN_SIZE,
@@ -244,10 +242,21 @@ impl BrushSettings {
         }
     }
 
-    /// True if this is the pixel brush, in whatever colour.
+    /// The pixel eraser: the pixel brush, rubbing out. Each touch takes
+    /// away exactly the pixel under the pointer.
+    pub fn pixel_eraser() -> Self {
+        Self {
+            mode: BrushMode::Erase,
+            ..Self::pixel()
+        }
+    }
+
+    /// True if this is the pixel brush or the pixel eraser, in whatever
+    /// colour.
     pub fn is_pixel(&self) -> bool {
         let pixel = Self {
             color: self.color,
+            mode: self.mode,
             ..Self::pixel()
         };
         *self == pixel

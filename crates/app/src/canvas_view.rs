@@ -131,6 +131,8 @@ pub struct CanvasView {
     /// The brush you had before a small picture switched to the pixel
     /// brush (see `use_pixel_brush`).
     brush_before_pixels: Option<BrushSettings>,
+    /// And the eraser you had.
+    eraser_before_pixels: Option<BrushSettings>,
 }
 
 impl Default for CanvasView {
@@ -159,6 +161,7 @@ impl Default for CanvasView {
             references: ReferencesView::default(),
             guide: None,
             brush_before_pixels: None,
+            eraser_before_pixels: None,
         }
     }
 }
@@ -335,11 +338,11 @@ impl CanvasView {
             _ => &tools.brush,
         };
         settings.brush = Some(Preset::from_settings("Brush", brush, tools.smoothing));
-        settings.eraser = Some(Preset::from_settings(
-            "Eraser",
-            &tools.eraser,
-            tools.smoothing,
-        ));
+        let eraser = match &self.eraser_before_pixels {
+            Some(before) if tools.eraser.is_pixel() => before,
+            _ => &tools.eraser,
+        };
+        settings.eraser = Some(Preset::from_settings("Eraser", eraser, tools.smoothing));
         settings.color = Some(tools.brush.color);
         settings.recent_colors = tools.recent_colors.clone();
         settings.presets_open = Some(self.presets.open);
@@ -364,8 +367,9 @@ impl CanvasView {
 
     /// A small picture opened from a PNG is painted pixel by pixel, so
     /// with `wanted` the brush becomes the pixel brush (a hard square one
-    /// pixel wide) in the colour you had. Without, the brush you had
-    /// before comes back, unless you've changed the brush since.
+    /// pixel wide) in the colour you had, and the eraser the pixel
+    /// eraser. Without, the brush and the eraser you had before come
+    /// back, unless you've changed them since.
     pub fn use_pixel_brush(&mut self, wanted: bool) {
         let tools = &mut self.tools;
         if wanted {
@@ -376,14 +380,25 @@ impl CanvasView {
                     ..BrushSettings::pixel()
                 };
             }
+            if !tools.eraser.is_pixel() {
+                self.eraser_before_pixels = Some(tools.eraser);
+                tools.eraser = BrushSettings::pixel_eraser();
+            }
             tools.tool = Tool::Brush;
-        } else if let Some(before) = self.brush_before_pixels.take()
-            && tools.brush.is_pixel()
-        {
-            tools.brush = BrushSettings {
-                color: tools.brush.color,
-                ..before
-            };
+        } else {
+            if let Some(before) = self.brush_before_pixels.take()
+                && tools.brush.is_pixel()
+            {
+                tools.brush = BrushSettings {
+                    color: tools.brush.color,
+                    ..before
+                };
+            }
+            if let Some(before) = self.eraser_before_pixels.take()
+                && tools.eraser.is_pixel()
+            {
+                tools.eraser = before;
+            }
         }
     }
 
