@@ -2020,3 +2020,76 @@ two false alarms. Every finding, before and after:
   with the corner pixel of an "L" dropped). The circle table in
   script-format and a test pin it down. The pixel duck's walk frame 2
   changed by 11 pixels (a slightly flatter crown and tail tip).
+
+## 88. PNG pictures, for Duck Mold (0.6.0)
+
+- **A PNG opens as a picture and stays linked to its file.** Duck Mold
+  (the low-poly modeller) starts Duck Quill on a small PNG, the texture
+  of one face of a model, and watches that file. So `DuckQuill.exe
+  face.png`, File → Open and Open recent now open a PNG: the canvas is
+  its size, its pixels are on one layer, see-through stays see-through.
+  The picture's file *is* the PNG (the title shows its name), and Save
+  writes the PNG back. This also makes Duck Forge's "Open in Duck
+  Quill" button work, which always passed a PNG.
+- **Save writes two files, the PNG last.** A PNG is flat, and painting
+  wants layers, so Save first writes `face.quill` beside the PNG (the
+  layers), then `face.png` (what Export PNG, transparent gives: no
+  paper). Each goes through a `.saving` file that is swapped in, as
+  every save does, so the PNG is always a whole picture, the old one or
+  the new one, and the program watching it never sees the layers ahead
+  of the picture. If the first write fails the PNG isn't touched. Save
+  As makes an ordinary `.quill` and drops the link.
+- **When both files are there, the PNG is the one that counts.**
+  Opening `face.png` opens `face.quill` instead (layers and all) only
+  if its picture without paper is exactly the PNG: same size, same
+  pixels, two fully see-through pixels counting as the same whatever
+  colour they hide (programs write different colours there). Otherwise
+  another program changed the PNG since the layers were saved: the PNG
+  opens as one layer, a message says so once, and the old layers stay
+  in `face.quill` until the next save. A `.quill` that can't be read
+  is treated the same way, with its own message. The rule is one
+  function, `png_link::choose`, tested without files.
+- **What a round trip keeps.** PNGs store colour straight, layers store
+  it premultiplied, both in steps of 1/255. Fully opaque pixels come
+  back exactly. Fully see-through pixels come back fully see-through
+  (the colour they hid becomes black). Partly see-through pixels keep
+  their opacity exactly, and each colour value moves by at most
+  `(255 + opacity) / (2 × opacity)` steps, rounded down: 1 step from
+  half see-through up, 2 at a quarter, more the fainter the pixel
+  (`png_link::round_trip_error`; a test tries every colour value at
+  every opacity). Saving a second time changes nothing more.
+- **`--paper` and `--guide`.** `--paper #RRGGBB` sets the picture's
+  paper, so a texture is seen on the face's own colour; it is saved in
+  the `.quill` like any paper and is never in the PNG. `--guide
+  guide.png` is only ever drawn on the screen, over the picture and
+  under the tools' outlines: stretched to the canvas, at 60% of its own
+  strength, with sharp pixels when zoomed in (smoothed when zoomed out,
+  so thin lines don't flicker away). It belongs to the picture Duck
+  Quill was started with: a new or opened picture takes it away. View →
+  Guide is only in the menu when there is a guide.
+- **Start options never stop the start.** The first word that isn't an
+  option is the picture; options may come before or after it; anything
+  starting with `-` is an option (a file called `-odd.png` needs its
+  folder in front). An unknown option, a missing value or a colour that
+  isn't one is left out and named in a message once the window is
+  open. Messages now wait in a queue, so two at the start (say, a
+  changed PNG and a guide that can't be read) are both seen.
+- **`program.txt`.** Duck Quill has no installer, so each start writes
+  the running program's full path as one line into the settings folder
+  (`%APPDATA%\Duck Quill\program.txt`), swapped in whole like the
+  settings. Sister apps read it to find Duck Quill. A failure is
+  ignored: Duck Quill works the same without it.
+- **Small pictures get the pixel brush.** A PNG no bigger than 256
+  pixels either way opens with the existing square tip at size 1,
+  hardness 100% and no pen pressure: one touch marks exactly the pixel
+  under the pointer, wherever in the pixel it lands, fully: a hard
+  square tip one pixel wide marks whole pixels with no soft rim, so
+  nothing under a painted pixel shows through (a texture's colour would
+  otherwise be tinted by the model's). The eraser becomes the same tip,
+  rubbing out: one pixel at a time, instead of 40 pixels wide on a
+  picture 32 across. The brush and eraser you had aren't forgotten:
+  they come back with the next
+  ordinary picture, and they are still the ones remembered for next
+  time unless you change them yourself. Fit already zooms a tiny canvas
+  in to fill the window (up to 6400%), and sharp pixels start at 200%.
+- **The version** is 0.6.0.

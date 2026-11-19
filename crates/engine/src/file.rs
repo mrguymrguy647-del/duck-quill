@@ -10,6 +10,9 @@
 //!   the files they came from (added in phase 5; older versions of the
 //!   app ignore them, as they ignore anything they don't know).
 //!
+//! A PNG picture can be opened and saved too, with its layers kept in a
+//! `.quill` beside it: see `png_link.rs`.
+//!
 //! Only painted tiles are stored, so saving is quick and files stay small.
 //! Tiles are stored exactly as the app keeps them in memory (8-bit,
 //! premultiplied), so opening a file gives back exactly the same pixels.
@@ -100,6 +103,8 @@ pub enum FileError {
     TooNew(u32),
     /// It's a Duck Quill picture, but part of it is damaged.
     Damaged(String),
+    /// The picture (this wide and high) is bigger than a canvas can be.
+    TooBig(u32, u32),
 }
 
 impl fmt::Display for FileError {
@@ -116,6 +121,11 @@ impl fmt::Display for FileError {
                  Please update Duck Quill to open it."
             ),
             FileError::Damaged(detail) => write!(f, "This picture file is damaged: {detail}"),
+            FileError::TooBig(width, height) => write!(
+                f,
+                "This picture is {width} × {height} pixels. The biggest canvas Duck Quill \
+                 can make is {MAX_CANVAS_SIDE} × {MAX_CANVAS_SIDE}."
+            ),
         }
     }
 }

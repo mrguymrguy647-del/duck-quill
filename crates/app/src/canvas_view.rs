@@ -35,6 +35,7 @@ use crate::brush_panel::brush_panel;
 use crate::color_panel::ColorPicker;
 use crate::color_panel::MAX_RECENT_COLORS;
 use crate::edit::{self, Clipboard, EditAction, FeatherWindow};
+use crate::guide::Guide;
 use crate::layers_panel::LayersPanel;
 use crate::paint_tool::{CanvasPlacement, PaintTool, Tool};
 use crate::pen_input::InkEvent;
@@ -125,6 +126,13 @@ pub struct CanvasView {
     mirror: MirrorHandles,
     /// The reference pictures' windows.
     references: ReferencesView,
+    /// A picture drawn faintly over the canvas to paint by (`--guide`).
+    guide: Option<Guide>,
+    /// The brush you had before a small picture switched to the pixel
+    /// brush (see `use_pixel_brush`).
+    brush_before_pixels: Option<BrushSettings>,
+    /// And the eraser you had.
+    eraser_before_pixels: Option<BrushSettings>,
 }
 
 impl Default for CanvasView {
@@ -151,6 +159,9 @@ impl Default for CanvasView {
             presets: PresetsPanel::default(),
             mirror: MirrorHandles::default(),
             references: ReferencesView::default(),
+            guide: None,
+            brush_before_pixels: None,
+            eraser_before_pixels: None,
         }
     }
 }
@@ -320,16 +331,18 @@ impl CanvasView {
     /// Puts what should be remembered into `settings`.
     pub fn store_settings(&self, settings: &mut Settings) {
         let tools = &self.tools;
-        settings.brush = Some(Preset::from_settings(
-            "Brush",
-            &tools.brush,
-            tools.smoothing,
-        ));
-        settings.eraser = Some(Preset::from_settings(
-            "Eraser",
-            &tools.eraser,
-            tools.smoothing,
-        ));
+        // The pixel brush a small picture switched to isn't the brush
+        // you chose: the one you had is remembered instead.
+        let brush = match &self.brush_before_pixels {
+            Some(before) if tools.brush.is_pixel() => before,
+            _ => &tools.brush,
+        };
+        settings.brush = Some(Preset::from_settings("Brush", brush, tools.smoothing));
+        let eraser = match &self.eraser_before_pixels {
+            Some(before) if tools.eraser.is_pixel() => before,
+            _ => &tools.eraser,
+        };
+        settings.eraser = Some(Preset::from_settings("Eraser", eraser, tools.smoothing));
         settings.color = Some(tools.brush.color);
         settings.recent_colors = tools.recent_colors.clone();
         settings.presets_open = Some(self.presets.open);
@@ -339,6 +352,54 @@ impl CanvasView {
     /// View → Hide references.
     pub fn references_hidden(&mut self) -> &mut bool {
         &mut self.references.hidden
+    }
+
+    /// Draws `guide` over the canvas from now on (`None` takes it away).
+    /// It belongs to the picture being shown: `reset` takes it away too.
+    pub fn set_guide(&mut self, guide: Option<Guide>) {
+        self.guide = guide;
+    }
+
+    /// View → Guide: whether the guide is shown (`None`: there's no guide).
+    pub fn guide_shown(&mut self) -> Option<&mut bool> {
+        self.guide.as_mut().map(|guide| &mut guide.shown)
+    }
+
+    /// A small picture opened from a PNG is painted pixel by pixel, so
+    /// with `wanted` the brush becomes the pixel brush (a hard square one
+    /// pixel wide) in the colour you had, and the eraser the pixel
+    /// eraser. Without, the brush and the eraser you had before come
+    /// back, unless you've changed them since.
+    pub fn use_pixel_brush(&mut self, wanted: bool) {
+        let tools = &mut self.tools;
+        if wanted {
+            if !tools.brush.is_pixel() {
+                self.brush_before_pixels = Some(tools.brush);
+                tools.brush = BrushSettings {
+                    color: tools.brush.color,
+                    ..BrushSettings::pixel()
+                };
+            }
+            if !tools.eraser.is_pixel() {
+                self.eraser_before_pixels = Some(tools.eraser);
+                tools.eraser = BrushSettings::pixel_eraser();
+            }
+            tools.tool = Tool::Brush;
+        } else {
+            if let Some(before) = self.brush_before_pixels.take()
+                && tools.brush.is_pixel()
+            {
+                tools.brush = BrushSettings {
+                    color: tools.brush.color,
+                    ..before
+                };
+            }
+            if let Some(before) = self.eraser_before_pixels.take()
+                && tools.eraser.is_pixel()
+            {
+                tools.eraser = before;
+            }
+        }
     }
 
     /// True while one of the canvas's small windows (Feather) is open.
@@ -356,6 +417,8 @@ impl CanvasView {
 
     pub fn reset(&mut self) {
         self.textures.clear();
+        // The guide was for the previous picture.
+        self.guide = None;
         self.needs_fit = true;
         self.fitted_view = None;
         self.drag = None;
@@ -596,6 +659,11 @@ impl CanvasView {
         self.update_textures(ui.ctx(), document, &visible);
         let painter = ui.painter_at(rect);
         self.paint(&painter, document, rect, &visible);
+        // The guide lies over the picture, under the tools' outlines.
+        if let Some(guide) = &mut self.guide {
+            let canvas = (document.width(), document.height());
+            guide.draw(ui.ctx(), &painter, &self.view, canvas);
+        }
 
         if let Some(transform) = &mut self.transform {
             transform.draw(ui.ctx(), &painter, &self.view);
@@ -1224,7 +1292,148 @@ fn to_pos2(point: Point) -> Pos2 {
 
 #[cfg(test)]
 mod tests {
-    use super::preview_level;
+    use super::*;
+
+    #[test]
+    fn a_small_picture_borrows_the_pixel_brush_and_gives_it_back() {
+        let mut canvas = CanvasView::default();
+        let mine = BrushSettings {
+            size: 42.0,
+            color: [200, 30, 30],
+            ..BrushSettings::default()
+        };
+        canvas.tools.brush = mine;
+        canvas.tools.tool = Tool::Eraser;
+
+        // A small PNG: a hard square, one pixel wide, in my colour.
+        canvas.use_pixel_brush(true);
+        let brush = canvas.tools.brush;
+        assert!(brush.is_pixel());
+        assert_eq!(brush.size, 1.0);
+        assert_eq!(brush.hardness, 1.0);
+        assert_eq!(brush.tip, quill_engine::brush::Tip::Square);
+        assert!(!brush.pressure_size && !brush.pressure_opacity);
+        assert_eq!(brush.color, [200, 30, 30]);
+        assert_eq!(canvas.tools.tool, Tool::Brush);
+        // What's remembered for next time is still my own brush.
+        let remembered_size = |canvas: &CanvasView| {
+            let mut settings = Settings::default();
+            canvas.store_settings(&mut settings);
+            settings.brush.unwrap().settings().unwrap().size
+        };
+        assert_eq!(remembered_size(&canvas), 42.0);
+        // A second small picture changes nothing more.
+        canvas.use_pixel_brush(true);
+
+        // Another kind of picture: my brush is back, in the colour I have now.
+        canvas.tools.brush.color = [0, 0, 255];
+        canvas.use_pixel_brush(false);
+        assert_eq!(
+            canvas.tools.brush,
+            BrushSettings {
+                color: [0, 0, 255],
+                ..mine
+            }
+        );
+
+        // If I change the brush myself while painting pixels, it's mine:
+        // it's remembered, and it isn't taken away.
+        canvas.use_pixel_brush(true);
+        canvas.tools.brush.size = 3.0;
+        assert_eq!(remembered_size(&canvas), 3.0);
+        canvas.use_pixel_brush(false);
+        assert_eq!(canvas.tools.brush.size, 3.0);
+        // And with nothing borrowed, nothing happens.
+        canvas.use_pixel_brush(false);
+        assert_eq!(canvas.tools.brush.size, 3.0);
+    }
+
+    /// Shows the canvas for one frame in a window 1400 x 900 that isn't
+    /// really there, and returns the textures of the pictures drawn, in
+    /// the order they were drawn.
+    fn pictures_drawn(
+        ctx: &egui::Context,
+        canvas: &mut CanvasView,
+        document: &mut Document,
+    ) -> Vec<egui::TextureId> {
+        let mut history = History::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            canvas.ui(ui, document, &mut history, Vec::new());
+        });
+        let drawn = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                Shape::Mesh(mesh) => Some(mesh.texture_id),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        drawn
+    }
+
+    #[test]
+    fn a_small_picture_fills_the_window_with_the_guide_drawn_over_it() {
+        let ctx = egui::Context::default();
+        let mut canvas = CanvasView::default();
+        // A 16 x 16 texture, and a guide of another size.
+        let texture = Image::new(16, 16, [200, 0, 0, 255]);
+        let mut document = quill_engine::png_link::document_from_image(&texture).unwrap();
+        canvas.set_guide(Some(Guide::from_image(Image::new(64, 64, [0, 0, 0, 255]))));
+
+        let drawn = pictures_drawn(&ctx, &mut canvas, &mut document);
+        // The picture is zoomed in to fill the space between the panels
+        // (about 890 x 870 points), all of it in view.
+        let area = canvas.last_rect.expect("the canvas was shown");
+        assert!(area.width() > 800.0 && area.height() > 800.0, "{area:?}");
+        let zoom = canvas.view.zoom();
+        assert!(zoom > 45.0 && zoom < 56.0, "zoom {zoom}");
+        for corner in [Point::new(0.0, 0.0), Point::new(16.0, 16.0)] {
+            let on_screen = to_pos2(canvas.view.canvas_to_screen(corner));
+            assert!(area.contains(on_screen), "{on_screen:?} in {area:?}");
+        }
+        // The picture's one tile is drawn, then the guide over it.
+        let guide = canvas.guide.as_ref().unwrap().texture_id().unwrap();
+        let tile = canvas.textures[&TileCoord::new(0, 0)].handle.id();
+        let place = |texture| drawn.iter().position(|&drawn| drawn == texture);
+        assert!(place(tile).is_some(), "the picture is drawn");
+        assert!(place(guide) > place(tile), "the guide is drawn over it");
+        assert_eq!(drawn.iter().filter(|&&t| t == guide).count(), 1);
+        // The guide is only on the screen: the picture holds nothing of it.
+        assert_eq!(
+            Image::of_document(&document, Background::Transparent),
+            texture
+        );
+
+        // View → Guide, unticked: the picture is drawn without it.
+        *canvas.guide_shown().unwrap() = false;
+        let drawn = pictures_drawn(&ctx, &mut canvas, &mut document);
+        assert!(drawn.contains(&tile) && !drawn.contains(&guide));
+    }
+
+    #[test]
+    fn a_new_picture_takes_the_guide_away() {
+        let mut canvas = CanvasView::default();
+        assert!(canvas.guide_shown().is_none(), "no guide, no tick");
+        let folder = std::env::temp_dir().join(format!("quill-canvas-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut bytes = Vec::new();
+        Image::new(4, 4, [0, 0, 0, 255])
+            .write_png(&mut bytes, true)
+            .unwrap();
+        std::fs::write(folder.join("guide.png"), bytes).unwrap();
+        canvas.set_guide(Guide::load(&folder.join("guide.png")).ok());
+        // View → Guide ticks it off and on.
+        *canvas.guide_shown().unwrap() = false;
+        assert_eq!(canvas.guide_shown().map(|shown| *shown), Some(false));
+        canvas.reset();
+        assert!(canvas.guide_shown().is_none());
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn preview_level_halves_the_size_for_each_halving_of_zoom() {

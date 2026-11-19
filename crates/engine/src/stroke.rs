@@ -335,6 +335,12 @@ impl Stroke {
         let (sin, cos) = dab.angle.to_radians().sin_cos();
         let varies_color = self.brush.dynamics.varies_color();
         let tooth = self.brush.tooth(pressure);
+        // A hard square tip one pixel wide (the pixel brush and the pixel
+        // eraser): no soft rim, so a pixel it touches is fully painted,
+        // or fully rubbed out.
+        let exact_pixel = self.brush.tip == crate::brush::Tip::Square
+            && self.brush.hardness >= 1.0
+            && dab.radius <= 0.5;
 
         for coord in rect.tiles() {
             let (left, top) = coord.origin();
@@ -369,6 +375,15 @@ impl Stroke {
                     let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
                     let distance = dx.hypot(dy);
                     let shape = match &self.tip {
+                        // The pixel brush marks whole pixels: the one
+                        // the dab's middle is in, fully, and no other.
+                        _ if exact_pixel => {
+                            if x == cx.floor() as i32 && y == cy.floor() as i32 {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
                         None => dab_coverage(distance, dab.radius, self.brush.hardness),
                         Some(tip) => {
                             // Into the tip's own square: turned back, and
@@ -718,6 +733,60 @@ mod tests {
         assert_eq!(layer.pixel(100, 100), Rgba8::new(0, 0, 0, 255)); // centre
         assert_eq!(layer.pixel(100, 115), Rgba8::TRANSPARENT); // outside the radius of 10
         assert_eq!(layer.tile_count(), 1);
+    }
+
+    /// Every painted pixel of `layer` (in the top-left tile) with its opacity.
+    fn painted(layer: &Surface) -> Vec<((i32, i32), u8)> {
+        let mut found = Vec::new();
+        for y in 0..64 {
+            for x in 0..64 {
+                let alpha = layer.pixel(x, y).a;
+                if alpha > 0 {
+                    found.push(((x, y), alpha));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_pixel_brush_marks_exactly_the_pixel_under_the_pointer() {
+        let brush = BrushSettings::pixel();
+        assert!(brush.is_pixel());
+        assert!(!BrushSettings::default().is_pixel());
+        // Wherever in pixel (7, 5) the pointer lands, and however lightly
+        // the pen presses, that one pixel is painted and no other.
+        for (x, y, pressure) in [
+            (7.5, 5.5, 1.0),
+            (7.05, 5.05, 1.0),
+            (7.95, 5.9, 1.0),
+            (7.3, 5.8, 0.05),
+        ] {
+            let mut layer = Surface::new();
+            paint(brush, &mut layer, &[StrokePoint::new(x, y, pressure)]);
+            let found = painted(&layer);
+            assert_eq!(found.len(), 1, "at {x}, {y}: {found:?}");
+            let ((px, py), alpha) = found[0];
+            assert_eq!((px, py), (7, 5), "at {x}, {y}");
+            // Fully solid: nothing under it shows through.
+            assert_eq!(alpha, 255, "at {x}, {y}");
+        }
+        // A line across is one pixel high, every pixel alike, no gaps.
+        let mut layer = Surface::new();
+        paint(brush, &mut layer, &[point(2.5, 10.5), point(9.5, 10.5)]);
+        let found = painted(&layer);
+        let pixels: Vec<(i32, i32)> = found.iter().map(|&(pixel, _)| pixel).collect();
+        let row: Vec<(i32, i32)> = (2..=9).map(|x| (x, 10)).collect();
+        assert_eq!(pixels, row);
+        assert!(found.iter().all(|&(_, alpha)| alpha == 255));
+        // The pixel eraser takes whole pixels away again, one at a time.
+        let eraser = BrushSettings::pixel_eraser();
+        assert!(eraser.is_pixel());
+        paint(eraser, &mut layer, &[point(4.2, 10.8)]);
+        let left: Vec<(i32, i32)> = painted(&layer).iter().map(|&(pixel, _)| pixel).collect();
+        let row: Vec<(i32, i32)> = (2..=9).filter(|x| *x != 4).map(|x| (x, 10)).collect();
+        assert_eq!(left, row);
+        assert!(painted(&layer).iter().all(|&(_, alpha)| alpha == 255));
     }
 
     #[test]

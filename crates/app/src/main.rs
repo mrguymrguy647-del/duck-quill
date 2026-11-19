@@ -15,6 +15,7 @@ mod color_panel;
 mod edit;
 mod files;
 mod filter_tool;
+mod guide;
 mod layers_panel;
 mod paint_tool;
 mod pen_input;
@@ -26,6 +27,7 @@ mod select_tool;
 mod settings;
 mod settings_folder;
 mod shortcut_sheet;
+mod start_options;
 mod symmetry_view;
 mod text_tool;
 mod theme;
@@ -35,11 +37,14 @@ mod transform_tool;
 use eframe::egui::{self, Button, Key, KeyboardShortcut, Modifiers};
 use quill_engine::document::Document;
 use quill_engine::history::History;
+use quill_engine::png_link;
+use quill_engine::tile::Rgba8;
 
 use animation_view::{AnimationView, PanelAction};
 use canvas_view::CanvasView;
 use files::{AnimationExport, DEFAULT_SIZE, Files};
 use filter_tool::FilterTool;
+use guide::Guide;
 use pen_input::PenInput;
 use pen_test::PenTestScreen;
 use playback::{BarAction, Playback};
@@ -51,6 +56,7 @@ use std::time::{Instant, SystemTime};
 use autosave::{Autosave, LeftBehind};
 use settings::{Settings, WindowPlace};
 use shortcut_sheet::ShortcutSheet;
+use start_options::StartOptions;
 
 /// The settings are saved at most this often while Duck Quill runs (and
 /// when it closes).
@@ -68,6 +74,8 @@ fn main() -> eframe::Result {
     // What was remembered from last time (or the defaults).
     let folder = settings_folder::settings_folder();
     let settings = Settings::load(folder.as_deref());
+    // Tell the sister apps (Duck Mold, Duck Forge) where this program is.
+    settings_folder::note_program_path(folder.as_deref());
     // Painting needs room: start maximized, unless it was left smaller.
     let place = settings.window.unwrap_or(WindowPlace {
         size: [1280.0, 800.0],
@@ -100,6 +108,15 @@ fn main() -> eframe::Result {
             Ok(Box::new(DuckQuill::new(pen_input, settings, folder)))
         }),
     )
+}
+
+/// A small picture just opened from a PNG (a texture, a sprite) is
+/// painted pixel by pixel, so it gets the pixel brush. Any other new
+/// picture gets back the brush that one replaced.
+fn suit_brush_to_picture(files: &mut Files, canvas: &mut CanvasView, document: &Document) {
+    let small_png =
+        files.take_png_opened() && png_link::is_small(document.width(), document.height());
+    canvas.use_pixel_brush(small_png);
 }
 
 /// The screens you can switch between in the top bar.
@@ -154,17 +171,19 @@ struct DuckQuill {
 
 impl DuckQuill {
     fn new(pen_input: PenInput, settings: Settings, settings_folder: Option<PathBuf>) -> Self {
-        // `DuckQuill.exe picture.quill` opens that picture, and
-        // `DuckQuill.exe script.json` plays that painting script on a new
-        // picture. That's also how Windows starts us for "Open with".
+        // `DuckQuill.exe picture.quill` (or `picture.png`) opens that
+        // picture, and `DuckQuill.exe script.json` plays that painting
+        // script on a new picture. That's also how Windows starts us for
+        // "Open with", and how Duck Mold starts us to paint a texture
+        // (with `--paper` and `--guide`: see `start_options.rs`).
         // Otherwise (or if it can't be opened) start with a blank picture
         // of the standard size.
+        let options = StartOptions::from_command_line();
         let mut files = Files::default();
         files.set_recent(settings.recent_files.clone());
         let mut playback = None;
         let mut animation = None;
-        let argument = std::env::args_os().nth(1).map(std::path::PathBuf::from);
-        let document = match argument {
+        let mut document = match options.file.clone() {
             Some(path)
                 if path
                     .extension()
@@ -213,9 +232,27 @@ impl DuckQuill {
             None => None,
         }
         .unwrap_or_else(|| Document::new(DEFAULT_SIZE[0], DEFAULT_SIZE[1]));
+        // `--paper`: the colour shown behind the picture.
+        if let Some([r, g, b]) = options.paper {
+            document.set_paper(Rgba8::new(r, g, b, 255));
+        }
         let mut canvas = CanvasView::default();
         canvas.fit_text_size(document.height());
         canvas.apply_settings(&settings);
+        suit_brush_to_picture(&mut files, &mut canvas, &document);
+        // `--guide`: a picture drawn faintly over the canvas.
+        if let Some(path) = &options.guide {
+            match Guide::load(path) {
+                Ok(guide) => canvas.set_guide(Some(guide)),
+                Err(problem) => files.show_message(
+                    "Couldn't show the guide",
+                    format!("{}\n\n{problem}", path.display()),
+                ),
+            }
+        }
+        if let Some(text) = options.problems_text() {
+            files.show_message("Some start-up options were left out", text);
+        }
         let now = SystemTime::now();
         let autosave = Autosave::new(settings_folder.as_ref().map(|f| f.join("recovery")), now);
         let restore_offer = autosave.left_behind();
@@ -521,6 +558,13 @@ impl eframe::App for DuckQuill {
                         ui.close();
                     }
                     ui.checkbox(self.canvas.references_hidden(), "Hide reference pictures");
+                    // Only when Duck Quill was started with a guide.
+                    if let Some(shown) = self.canvas.guide_shown() {
+                        ui.checkbox(shown, "Guide").on_hover_text(
+                            "Show the guide picture over the painting. \
+                             It's never painted, saved or exported",
+                        );
+                    }
                 });
                 if add_reference
                     && let Some(path) = rfd::FileDialog::new()
@@ -630,6 +674,7 @@ impl eframe::App for DuckQuill {
             self.history = History::default();
             self.canvas.reset();
             self.canvas.fit_text_size(self.document.height());
+            suit_brush_to_picture(&mut self.files, &mut self.canvas, &self.document);
             self.animation = None;
             self.frame_shown = None;
         }

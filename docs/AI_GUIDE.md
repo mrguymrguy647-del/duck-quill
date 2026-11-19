@@ -588,6 +588,12 @@ People can draw in the Duck Quill window and send you their work:
   script: their layers, brush settings and every stroke as `[x, y, pressure]` points. Read it to
   see what they drew and where, and to match their brush sizes and colours.
 - They can watch your script being painted in the app with **File → Play strokes…**.
+- **A PNG:** the app opens one as a picture (`DuckQuill picture.png`, or **File → Open…**) and
+  stays linked to it: Save writes `picture.png` back (flat, transparent background) and keeps the
+  layers in `picture.quill` beside it. That `.quill` is the one to `open` in a `canvas` command or
+  to look at with `quill info`. Another program can start the app with `--paper #RRGGBB` (the
+  colour behind the picture) and `--guide guide.png` (a picture shown faintly over the canvas);
+  neither ends up in the PNG. `quill` itself is unchanged: it still paints scripts, not PNGs.
 
 ## 10. Animation and pixel art
 

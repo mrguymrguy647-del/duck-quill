@@ -21,6 +21,16 @@ WITH A PEN TABLET
   what your pen sends.
 
 
+PNG PICTURES, AND DUCK MOLD
+  Duck Quill opens PNG pictures too (File > Open). Save then writes the
+  PNG back, and keeps its layers in a .quill file beside it.
+
+  Duck Mold and Duck Forge can start Duck Quill for you, to paint a
+  texture. They find it through a small file Duck Quill writes each
+  time it starts, so start Duck Quill once yourself after unzipping or
+  moving this folder.
+
+
 WHAT'S IN THIS FOLDER
   DuckQuill.exe    the app
   quill.exe        Duck Quill on the command line: paints scripts into

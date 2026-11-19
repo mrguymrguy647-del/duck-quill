@@ -192,7 +192,7 @@ fn picture_ui(
 }
 
 /// The picture as a texture, shrunk if it's very big.
-fn texture_image(image: &Image) -> ColorImage {
+pub fn texture_image(image: &Image) -> ColorImage {
     let (w, h) = (image.width().max(1), image.height().max(1));
     let step = w.max(h).div_ceil(MAX_TEXTURE_SIDE).max(1);
     let (tw, th) = (w.div_ceil(step), h.div_ceil(step));

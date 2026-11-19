@@ -62,7 +62,7 @@ double-click `run.bat` once. Your desktop shortcut then opens the new version.
 | Action | Mouse / keyboard | Touchscreen / touchpad |
 |---|---|---|
 | New picture | **File → New…** or `Ctrl+N`: choose a size (or a common size) | Tap **File** |
-| Open / save | **File → Open…** (`Ctrl+O`), **Save** (`Ctrl+S`), **Save as…** (`Ctrl+Shift+S`). Pictures are saved as `.quill` files, with all layers | Tap **File** |
+| Open / save | **File → Open…** (`Ctrl+O`), **Save** (`Ctrl+S`), **Save as…** (`Ctrl+Shift+S`). Pictures are saved as `.quill` files, with all layers. A PNG opens too, and Save writes it back: see [PNG pictures](#png-pictures-and-painting-for-duck-mold) | Tap **File** |
 | Export a PNG image | **File → Export PNG…** (`Ctrl+E`) on the paper colour, or **Export PNG, transparent…** (`Ctrl+Shift+E`) with no paper | Tap **File** |
 | Watch a painting script being painted | **File → Play strokes…** and pick a `.json` script. A bar at the bottom has **Pause**, **Skip to end**, **Stop** and a **Speed** slider. Everything it paints is **one** undo step. While it plays you can zoom and move around, but not paint | Tap **File** |
 | Watch an animation | **File → Play strokes…** (or **Open…**) and pick a script with animations: its frames appear in the **Animation** panel at the bottom. **Play / Pause**, `|<` and `>|` step a frame, the **fps** slider, **Onion skin** shows the frame before in red and the one after in blue, the list of frame numbers jumps to a frame, and the drop-down picks the animation. **Close** keeps the frame shown as the picture | Tap the buttons |
@@ -99,6 +99,53 @@ painting script, which then plays on a new picture) → **Open with** →
 **Choose another app** → **Choose an app on your PC**, and pick
 `C:\dev\duck-quill\target\release\DuckQuill.exe`. Tick "Always use this app" to open them with a
 double-click from then on.
+
+### PNG pictures, and painting for Duck Mold
+
+Duck Quill opens a PNG as a picture: **File → Open…**, **Open recent**, "Open with" in File
+Explorer, or `DuckQuill.exe picture.png`. The canvas is the PNG's size, its pixels are on one layer,
+and its see-through parts stay see-through.
+
+A picture opened from a PNG stays **linked** to it: the title bar shows the PNG's name, and
+**Save** (`Ctrl+S`) writes two files:
+
+- `picture.png` itself: the flat picture on a transparent background (like **Export PNG,
+  transparent**; the paper is never in it), for the program that's waiting for it;
+- `picture.quill` beside it: the same picture with its layers, so you can carry on later.
+
+The top bar then says "Saved picture.png, and its layers in picture.quill". **Save as…** makes an
+ordinary `.quill` picture, and the link is dropped.
+
+When you open `picture.png` again, its layers come back from `picture.quill`, as long as they still
+show exactly the PNG's picture. If another program changed the PNG meanwhile, the PNG wins: it opens
+as one layer, Duck Quill tells you so, and the old layers stay in `picture.quill` until you save.
+
+A small picture (256 pixels or less each way) fills the window when it opens, and starts with the
+**pixel brush**: a hard square one pixel wide (tip **square**, size 1, hardness 100%, no pen
+pressure) that marks exactly the pixel under the pointer, fully solid. The eraser becomes the same,
+rubbing out one pixel at a time. The brush and eraser you had come back with the next ordinary
+picture.
+
+**Started by another program.** Duck Mold, the low-poly 3D modeller, starts Duck Quill to paint the texture of one face of a model, and watches the
+PNG: every time you save, the model shows the new texture.
+
+```
+DuckQuill.exe face.png --paper #C8A064 --guide face-guide.png
+```
+
+| Option | What it does |
+|---|---|
+| `--paper #RRGGBB` | The paper colour shown behind the picture (`#RGB` works too). Duck Mold passes the face's own colour, so the painting looks as it will on the model. It's only shown: the PNG never has it |
+| `--guide guide.png` | A picture drawn faintly over the canvas to paint by (Duck Mold sends the face's outline). It's stretched to the canvas's size and follows zoom, pan and rotate. It's never painted into a layer, saved or exported. **View → Guide** hides and shows it |
+
+The options can come before or after the picture, and `--paper=#C8A064` works as well. Anything
+starting with `-` is an option. One that Duck Quill doesn't know, or whose value is missing or wrong,
+is left out and named in a message when the window opens; it never stops Duck Quill from starting.
+
+**Where Duck Quill is.** Duck Quill has no installer, so other programs can't know where it is. Each
+time it starts, it writes the full path of its program as one line of text into
+`%APPDATA%\Duck Quill\program.txt` (`~/.config/duck-quill/program.txt` on Linux). Duck Mold and
+Duck Forge read that file to find it, so start Duck Quill once yourself after moving its folder.
 
 ### Pen tablet tip
 
@@ -206,6 +253,7 @@ duck-quill/
     │       ├── presets.rs    brush presets (the built-in ones are in engine/presets/)
     │       ├── reference.rs  reference pictures pinned beside a painting
     │       ├── pixels.rs     pixel art: painting big and shrinking by the centre rule
+    │       ├── png_link.rs   a picture kept as a PNG, with its layers in a .quill beside it
     │       ├── history.rs    undo / redo
     │       ├── file.rs       saving and opening .quill files, PNG export
     │       ├── color.rs      RGB ↔ HSV, hex codes, colour on paper
@@ -225,6 +273,7 @@ duck-quill/
         ├── assets/       the logos for Help → About, shrunk
         └── src/
             ├── main.rs        starts the app, top bar, switches screens
+            ├── start_options.rs the picture and options Duck Quill is started with (--paper, --guide)
             ├── theme.rs       dark or light, and the brand's colours
             ├── about.rs       Help → About Duck Quill
             ├── files.rs       File menu: new, open, save, export, scripts, "Save changes?"
@@ -241,8 +290,9 @@ duck-quill/
             ├── presets_panel.rs the Presets grid: use, save, rename, import, export
             ├── symmetry_view.rs symmetry: the mirror lines and their handles
             ├── references_view.rs reference pictures in their own windows
+            ├── guide.rs       the guide picture drawn faintly over the canvas (--guide)
             ├── autosave.rs    copies of unsaved work, and restoring them after a crash
-            ├── settings.rs    what's remembered between runs (settings_folder.rs: where)
+            ├── settings.rs    what's remembered between runs (settings_folder.rs: where, and program.txt)
             ├── shortcut_sheet.rs Help → Keyboard shortcuts
             ├── pen_input.rs   reads pressure/tilt from Windows Ink
             └── pen_test.rs    the pen test screen
